@@ -8,6 +8,7 @@ import {
   joinMatch,
   startMatch,
   updateMatchMessageId,
+  MatchWithPlayers,
 } from '../../services/matchService';
 import { findUserByTelegramId } from '../../services/userService';
 import {
@@ -48,58 +49,79 @@ export async function handleCallbackQuery(ctx: Context): Promise<void> {
 // ─── Game Select ──────────────────────────────────────────────────────────────
 
 async function handleGameSelect(ctx: Context, data: string): Promise<void> {
+  // Answer immediately — Telegram has a 10s callback timeout
+  await ctx.answerCallbackQuery();
+
   const gameId = data.replace('game:select:', '');
   const chatId = ctx.chat?.id;
   const userId = ctx.from?.id;
-  if (!chatId || !userId) {
-    await ctx.answerCallbackQuery();
-    return;
-  }
+  if (!chatId || !userId) return;
 
   const game = await findGameById(gameId);
   if (!game || !game.isActive) {
-    await ctx.answerCallbackQuery('❌ O\'yin topilmadi yoki o\'chirilgan');
+    await ctx.reply('❌ O\'yin topilmadi yoki o\'chirilgan');
     return;
   }
 
   const dbUser = await findUserByTelegramId(userId);
   if (!dbUser) {
-    await ctx.answerCallbackQuery('⚠️ Avval /start buyrug\'ini yuboring');
+    await ctx.reply('⚠️ Avval /start buyrug\'ini yuboring');
     return;
   }
 
-  // Find or create a waiting match for this game in this chat
+  // Find existing waiting match or create a new one
   let match = await findWaitingMatchInChat(BigInt(chatId), gameId);
+  const isNewMatch = !match;
 
   if (!match) {
-    match = await createMatch(gameId, BigInt(chatId), game.minPlayers, game.maxPlayers) as any;
-    match = await getMatchWithPlayers(match!.id) as any;
+    const created = await createMatch(gameId, BigInt(chatId), game.minPlayers, game.maxPlayers);
+    match = await getMatchWithPlayers(created.id);
   }
 
   if (!match) {
-    await ctx.answerCallbackQuery('❌ Match yaratishda xatolik');
+    await ctx.reply('❌ Match yaratishda xatolik');
     return;
   }
 
-  // Auto-join the selector
+  // Auto-join the selector if not already in match
   const alreadyIn = await isUserInMatch(match.id, dbUser.id);
   if (!alreadyIn) {
-    await joinMatch(match.id, dbUser.id);
-    // Refresh
-    match = await getMatchWithPlayers(match.id) as any;
+    await safeJoinMatch(match.id, dbUser.id);
+    match = await getMatchWithPlayers(match.id);
+    if (!match) return;
   }
 
-  await ctx.answerCallbackQuery();
-  const sentMsg = await ctx.reply(buildJoinPanel(match!), {
-    parse_mode: 'Markdown',
-    reply_markup: buildJoinKeyboard(match!),
-  });
+  // ── Panel management ───────────────────────────────────────────────────────
+  // If an existing match already has a panel message in the group, EDIT it
+  // instead of sending a second one. Only send a new panel for brand new matches
+  // or when the old message was deleted.
+  if (!isNewMatch && match.messageId) {
+    try {
+      await ctx.api.editMessageText(
+        chatId,
+        match.messageId,
+        buildJoinPanel(match),
+        { parse_mode: 'Markdown', reply_markup: buildJoinKeyboard(match) },
+      );
+    } catch {
+      // Original message deleted — send a fresh panel
+      const sent = await ctx.reply(buildJoinPanel(match), {
+        parse_mode: 'Markdown',
+        reply_markup: buildJoinKeyboard(match),
+      });
+      await updateMatchMessageId(match.id, sent.message_id);
+    }
+  } else {
+    const sent = await ctx.reply(buildJoinPanel(match), {
+      parse_mode: 'Markdown',
+      reply_markup: buildJoinKeyboard(match),
+    });
+    await updateMatchMessageId(match.id, sent.message_id);
+  }
 
-  await updateMatchMessageId(match!.id, sentMsg.message_id);
-
-  // Auto-start if maxPlayers reached
-  if (match!.players.length >= match!.maxPlayers) {
-    await doStartMatch(ctx, match!.id);
+  // Auto-start when all slots filled (maxPlayers reached)
+  if (match.players.length >= match.maxPlayers) {
+    await doStartMatch(ctx, match.id);
   }
 }
 
@@ -138,24 +160,29 @@ async function handleMatchJoin(ctx: Context, data: string): Promise<void> {
     return;
   }
 
-  await joinMatch(matchId, dbUser.id);
-  match = await getMatchWithPlayers(matchId) as any;
+  const joined = await safeJoinMatch(matchId, dbUser.id);
+  if (!joined) {
+    await ctx.answerCallbackQuery('ℹ️ Siz allaqachon bu matchdasiz');
+    return;
+  }
+
+  match = await getMatchWithPlayers(matchId) as MatchWithPlayers;
   await ctx.answerCallbackQuery('✅ Qo\'shildingiz!');
 
-  // Update join panel message
+  // Update the existing join panel message
   try {
-    if (match!.messageId) {
+    if (match.messageId) {
       await ctx.api.editMessageText(
-        Number(match!.chatId),
-        match!.messageId,
-        buildJoinPanel(match!),
-        { parse_mode: 'Markdown', reply_markup: buildJoinKeyboard(match!) },
+        Number(match.chatId),
+        match.messageId,
+        buildJoinPanel(match),
+        { parse_mode: 'Markdown', reply_markup: buildJoinKeyboard(match) },
       );
     }
   } catch { /* message may have been deleted */ }
 
-  // Auto-start when maxPlayers reached
-  if (match!.players.length >= match!.maxPlayers) {
+  // Auto-start when all slots filled
+  if (match.players.length >= match.maxPlayers) {
     await doStartMatch(ctx, matchId);
   }
 }
@@ -169,17 +196,23 @@ async function handleMatchStart(ctx: Context, data: string): Promise<void> {
   if (!userId || !chatId) { await ctx.answerCallbackQuery(); return; }
 
   const dbUser = await findUserByTelegramId(userId);
-  if (!dbUser) { await ctx.answerCallbackQuery('⚠️ Avval /start buyrug\'ini yuboring'); return; }
+  if (!dbUser) {
+    await ctx.answerCallbackQuery('⚠️ Avval /start buyrug\'ini yuboring');
+    return;
+  }
 
   const match = await getMatchWithPlayers(matchId);
-  if (!match) { await ctx.answerCallbackQuery('❌ Match topilmadi'); return; }
+  if (!match) {
+    await ctx.answerCallbackQuery('❌ Match topilmadi');
+    return;
+  }
 
   if (match.status !== 'WAITING') {
     await ctx.answerCallbackQuery('⚠️ Match allaqachon boshlangan');
     return;
   }
 
-  // Authorization: must be in match OR group admin OR global admin
+  // Authorization: must be a match participant OR group admin OR global admin
   const inMatch = await isUserInMatch(matchId, dbUser.id);
   const groupAdmin = await isGroupAdmin(ctx, chatId, userId);
   const globalAdmin = isGlobalAdmin(userId);
@@ -190,11 +223,13 @@ async function handleMatchStart(ctx: Context, data: string): Promise<void> {
   }
 
   if (match.players.length < match.requiredPlayers) {
-    await ctx.answerCallbackQuery(`⚠️ Kamida ${match.requiredPlayers} o\'yinchi kerak (hozir ${match.players.length})`);
+    await ctx.answerCallbackQuery(
+      `⚠️ Kamida ${match.requiredPlayers} o\'yinchi kerak (hozir ${match.players.length})`,
+    );
     return;
   }
 
-  // Team game: must have even count
+  // Team game: enforce even player count
   if (match.game.isTeamGame && match.players.length % 2 !== 0) {
     await ctx.answerCallbackQuery('⚠️ Jamoaviy o\'yin uchun juft sonli o\'yinchi kerak');
     return;
@@ -204,12 +239,34 @@ async function handleMatchStart(ctx: Context, data: string): Promise<void> {
   await doStartMatch(ctx, matchId);
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Joins a match, handling the unique-constraint race condition gracefully.
+ * Returns true if the join succeeded, false if the user was already in the match.
+ */
+async function safeJoinMatch(matchId: string, userId: string): Promise<boolean> {
+  try {
+    await joinMatch(matchId, userId);
+    return true;
+  } catch (err: any) {
+    // Prisma unique constraint violation code
+    if (err?.code === 'P2002') return false;
+    throw err;
+  }
+}
 
 async function doStartMatch(ctx: Context, matchId: string): Promise<void> {
-  const match = await startMatch(matchId);
+  let match: MatchWithPlayers;
+  try {
+    match = await startMatch(matchId);
+  } catch (err: any) {
+    // Match may have already been started by a concurrent action
+    console.warn('[doStartMatch]', err.message);
+    return;
+  }
 
-  // Update join panel to reflect started state
+  // Remove buttons from join panel and mark as started
   try {
     if (match.messageId) {
       await ctx.api.editMessageText(
@@ -219,17 +276,19 @@ async function doStartMatch(ctx: Context, matchId: string): Promise<void> {
         { parse_mode: 'Markdown' },
       );
     }
-  } catch { /* ignore */ }
+  } catch { /* message may have been deleted */ }
 
   await notifyPlayersMatchStarted(match);
   await notifyGroupMatchStarted(match.chatId, match);
 }
 
-function buildJoinPanel(match: any): string {
+function buildJoinPanel(match: MatchWithPlayers): string {
   const playerList = match.players
-    .map((p: any) => {
-      const n = p.user.lastName ? `${p.user.firstName} ${p.user.lastName}` : p.user.firstName;
-      return `  • ${n}`;
+    .map((p) => {
+      const name = p.user.lastName
+        ? `${p.user.firstName} ${p.user.lastName}`
+        : p.user.firstName;
+      return `  • ${name}`;
     })
     .join('\n');
 
@@ -241,19 +300,19 @@ function buildJoinPanel(match: any): string {
   return lines.join('\n');
 }
 
-function buildJoinKeyboard(match: any): InlineKeyboard {
+function buildJoinKeyboard(match: MatchWithPlayers): InlineKeyboard {
   const kb = new InlineKeyboard();
   kb.text('➕ Qo\'shilish', `match:join:${match.id}`);
 
-  const canStart = match.players.length >= match.requiredPlayers;
-  if (canStart) {
+  // Show Start button once minimum players are gathered
+  if (match.players.length >= match.requiredPlayers) {
     kb.row().text('🚀 Boshlash', `match:start:${match.id}`);
   }
 
   return kb;
 }
 
-function buildStartedPanel(match: any): string {
+function buildStartedPanel(match: MatchWithPlayers): string {
   return [
     `🎮 *${match.game.name}*`,
     `✅ O'yin boshlandi!`,

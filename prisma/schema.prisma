@@ -49,11 +49,11 @@ model Game {
 model Match {
   id              String      @id @default(cuid())
   gameId          String
-  chatId          BigInt      // Telegram group chat ID
-  messageId       Int?        // Join panel message ID (for editing)
+  chatId          BigInt // Telegram group chat ID
+  messageId       Int? // Join panel message ID (for editing)
   status          MatchStatus @default(WAITING)
-  requiredPlayers Int         // snapshot of game minPlayers at creation
-  maxPlayers      Int         // snapshot of game maxPlayers at creation
+  requiredPlayers Int // snapshot of game minPlayers at creation
+  maxPlayers      Int // snapshot of game maxPlayers at creation
   createdAt       DateTime    @default(now())
   startedAt       DateTime?
   finishedAt      DateTime?
@@ -74,10 +74,10 @@ enum MatchStatus {
 
 // ─── MatchPlayer ──────────────────────────────────────────────────────────────
 model MatchPlayer {
-  id       String  @id @default(cuid())
+  id       String   @id @default(cuid())
   matchId  String
   userId   String
-  team     Int?    // null for non-team games; 1 or 2 for team games
+  team     Int? // null for non-team games; 1 or 2 for team games
   joinedAt DateTime @default(now())
 
   match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)

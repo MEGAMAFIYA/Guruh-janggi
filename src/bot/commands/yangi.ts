@@ -39,9 +39,8 @@ export async function handleYangi(ctx: CommandContext<Context>): Promise<void> {
 
   const chatId = ctx.chat!.id;
   const userId = ctx.from!.id;
-  const key = sessionKey(chatId, userId);
 
-  sessions.set(key, { step: 1 });
+  sessions.set(sessionKey(chatId, userId), { step: 1 });
 
   await ctx.reply(
     '🎮 *Yangi o\'yin qo\'shish*\n\n*1-qadam:* O\'yin nomini kiriting:\n\n_(Bekor qilish uchun /bekor deb yozing)_',
@@ -72,85 +71,129 @@ export async function handleYangiStep(ctx: Context): Promise<boolean> {
     return true;
   }
 
-  if (state.step === 1) {
-    // Step 1: game name
-    if (text.length < 1 || text.length > 100) {
-      await ctx.reply('⚠️ O\'yin nomi 1-100 belgi orasida bo\'lishi kerak. Qayta kiriting:');
-      return true;
-    }
-    state.name = text;
-    state.step = 2;
-    await ctx.reply(
-      '*2-qadam:* O\'yinning Web App / Mini App URL manzilini kiriting:\n\nMasalan: `https://example-game.com`',
-      { parse_mode: 'Markdown' },
-    );
-    return true;
+  switch (state.step) {
+    case 1:
+      return handleStepName(ctx, state, key, text);
+    case 2:
+      return handleStepUrl(ctx, state, key, chatId, userId, text);
+    // Steps 3 (team choice), 4 (min), 5 (max) are handled via inline keyboard callbacks.
+    // Text fallback for steps 4 and 5 (in case user types manually):
+    case 4:
+      return handleStepMinPlayers(ctx, state, key, text);
+    case 5:
+      return handleStepMaxPlayers(ctx, state, key, text);
+    default:
+      return false;
   }
-
-  if (state.step === 2) {
-    // Step 2: web app URL
-    try {
-      new URL(text);
-    } catch {
-      await ctx.reply('⚠️ Noto\'g\'ri URL. Iltimos, to\'liq URL manzilini kiriting (https:// bilan):');
-      return true;
-    }
-    state.webAppUrl = text;
-    state.step = 3;
-
-    const kb = new InlineKeyboard()
-      .text('👤 Yo\'q, jamoaviy emas', `yangi:team:no:${chatId}:${userId}`)
-      .text('👥 Ha, jamoaviy', `yangi:team:yes:${chatId}:${userId}`);
-
-    await ctx.reply('*3-qadam:* O\'yin jamoaviymi?', {
-      parse_mode: 'Markdown',
-      reply_markup: kb,
-    });
-    return true;
-  }
-
-  if (state.step === 4) {
-    // Step 4: min players (as text fallback; normally handled via callback)
-    return handleMinPlayers(ctx, state, key, text);
-  }
-
-  if (state.step === 5) {
-    return handleMaxPlayers(ctx, state, key, text);
-  }
-
-  return false;
 }
 
-async function handleMinPlayers(ctx: Context, state: YangiState, key: string, text: string): Promise<boolean> {
+// ─── Step handlers ────────────────────────────────────────────────────────────
+
+async function handleStepName(
+  ctx: Context,
+  state: YangiState,
+  key: string,
+  text: string,
+): Promise<boolean> {
+  if (text.length < 1 || text.length > 100) {
+    await ctx.reply('⚠️ O\'yin nomi 1-100 belgi orasida bo\'lishi kerak. Qayta kiriting:');
+    return true;
+  }
+  state.name = text;
+  state.step = 2;
+  await ctx.reply(
+    '*2-qadam:* O\'yinning Web App / Mini App URL manzilini kiriting:\n\nMasalan: `https://example-game.com`',
+    { parse_mode: 'Markdown' },
+  );
+  return true;
+}
+
+async function handleStepUrl(
+  ctx: Context,
+  state: YangiState,
+  key: string,
+  chatId: number,
+  userId: number,
+  text: string,
+): Promise<boolean> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(text);
+  } catch {
+    await ctx.reply('⚠️ Noto\'g\'ri URL. Iltimos, to\'liq URL manzilini kiriting (https:// bilan):');
+    return true;
+  }
+
+  // Only allow http and https — block javascript:, data:, ftp:, etc.
+  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+    await ctx.reply('⚠️ Faqat https:// yoki http:// URL qabul qilinadi.');
+    return true;
+  }
+
+  state.webAppUrl = text;
+  state.step = 3;
+
+  const kb = new InlineKeyboard()
+    .text('👤 Yo\'q, jamoaviy emas', `yangi:team:no:${chatId}:${userId}`)
+    .text('👥 Ha, jamoaviy', `yangi:team:yes:${chatId}:${userId}`);
+
+  await ctx.reply('*3-qadam:* O\'yin jamoaviymi?', {
+    parse_mode: 'Markdown',
+    reply_markup: kb,
+  });
+  return true;
+}
+
+async function handleStepMinPlayers(
+  ctx: Context,
+  state: YangiState,
+  key: string,
+  text: string,
+): Promise<boolean> {
   const n = parseInt(text, 10);
-  if (isNaN(n)) return false;
+  if (isNaN(n)) {
+    await ctx.reply('⚠️ Iltimos, son kiriting (masalan: 2)');
+    return true;
+  }
   const allowed = state.isTeamGame ? [2, 4, 6] : [2, 3, 4, 5, 6];
   if (!allowed.includes(n)) {
-    await ctx.reply(`⚠️ Noto'g'ri son. Ruxsat etilgan: ${allowed.join(', ')}`);
+    await ctx.reply(`⚠️ Noto'g'ri son. Ruxsat etilgan qiymatlar: ${allowed.join(', ')}`);
     return true;
   }
   state.minPlayers = n;
   state.step = 5;
-  await sendMaxPlayersKeyboard(ctx, state, key);
+  await sendMaxPlayersKeyboard(ctx, state, extractChatId(ctx), extractUserId(ctx));
   return true;
 }
 
-async function handleMaxPlayers(ctx: Context, state: YangiState, key: string, text: string): Promise<boolean> {
+async function handleStepMaxPlayers(
+  ctx: Context,
+  state: YangiState,
+  key: string,
+  text: string,
+): Promise<boolean> {
   const n = parseInt(text, 10);
-  if (isNaN(n)) return false;
+  if (isNaN(n)) {
+    await ctx.reply('⚠️ Iltimos, son kiriting (masalan: 4)');
+    return true;
+  }
   const allowed = state.isTeamGame ? [2, 4, 6] : [2, 3, 4, 5, 6];
   if (!allowed.includes(n) || n < (state.minPlayers ?? 2)) {
-    await ctx.reply(`⚠️ Maksimum minimum (${state.minPlayers})dan kichik bo'lmasligi va ${allowed.join(', ')} ichida bo'lishi kerak.`);
+    await ctx.reply(
+      `⚠️ Maksimum minimum (${state.minPlayers})dan kichik bo'lmasligi va ${allowed.join(', ')} ichida bo'lishi kerak.`,
+    );
     return true;
   }
   state.maxPlayers = n;
   state.step = 6;
-  await sendConfirmation(ctx, state, key);
+  await sendConfirmation(ctx, state, extractChatId(ctx), extractUserId(ctx));
   return true;
 }
 
+// ─── Callback handler ─────────────────────────────────────────────────────────
+
 export async function handleYangiCallback(ctx: Context, data: string): Promise<void> {
-  // data formats:
+  // Callback data formats:
   //   yangi:team:yes|no:<chatId>:<userId>
   //   yangi:min:<value>:<chatId>:<userId>
   //   yangi:max:<value>:<chatId>:<userId>
@@ -162,10 +205,11 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
 
   if (action === 'team') {
     const isTeam = parts[2] === 'yes';
-    const chatId = parseInt(parts[3]);
-    const userId = parseInt(parts[4]);
+    const chatId = parseInt(parts[3], 10);
+    const userId = parseInt(parts[4], 10);
     const key = sessionKey(chatId, userId);
     const state = sessions.get(key);
+
     if (!state || state.step !== 3) {
       await ctx.answerCallbackQuery('⚠️ Session topilmadi. /yangi dan qayta boshlang.');
       return;
@@ -177,16 +221,17 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
       `*3-qadam:* O'yin jamoaviy: *${isTeam ? 'Ha' : 'Yo\'q'}*`,
       { parse_mode: 'Markdown' },
     );
-    await sendMinPlayersKeyboard(ctx, state, key, chatId, userId);
+    await sendMinPlayersKeyboard(ctx, state, chatId, userId);
     return;
   }
 
   if (action === 'min') {
-    const value = parseInt(parts[2]);
-    const chatId = parseInt(parts[3]);
-    const userId = parseInt(parts[4]);
+    const value = parseInt(parts[2], 10);
+    const chatId = parseInt(parts[3], 10);
+    const userId = parseInt(parts[4], 10);
     const key = sessionKey(chatId, userId);
     const state = sessions.get(key);
+
     if (!state || state.step !== 4) {
       await ctx.answerCallbackQuery('⚠️ Session topilmadi.');
       return;
@@ -194,36 +239,40 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
     state.minPlayers = value;
     state.step = 5;
     await ctx.answerCallbackQuery();
-    await sendMaxPlayersKeyboard(ctx, state, key);
+    await sendMaxPlayersKeyboard(ctx, state, chatId, userId);
     return;
   }
 
   if (action === 'max') {
-    const value = parseInt(parts[2]);
-    const chatId = parseInt(parts[3]);
-    const userId = parseInt(parts[4]);
+    const value = parseInt(parts[2], 10);
+    const chatId = parseInt(parts[3], 10);
+    const userId = parseInt(parts[4], 10);
     const key = sessionKey(chatId, userId);
     const state = sessions.get(key);
+
     if (!state || state.step !== 5) {
       await ctx.answerCallbackQuery('⚠️ Session topilmadi.');
       return;
     }
     if (value < (state.minPlayers ?? 2)) {
-      await ctx.answerCallbackQuery(`⚠️ Maksimum minimumdan (${state.minPlayers}) kichik bo'lishi mumkin emas.`);
+      await ctx.answerCallbackQuery(
+        `⚠️ Maksimum minimumdan (${state.minPlayers}) kichik bo'lishi mumkin emas.`,
+      );
       return;
     }
     state.maxPlayers = value;
     state.step = 6;
     await ctx.answerCallbackQuery();
-    await sendConfirmation(ctx, state, key);
+    await sendConfirmation(ctx, state, chatId, userId);
     return;
   }
 
   if (action === 'confirm') {
-    const chatId = parseInt(parts[2]);
-    const userId = parseInt(parts[3]);
+    const chatId = parseInt(parts[2], 10);
+    const userId = parseInt(parts[3], 10);
     const key = sessionKey(chatId, userId);
     const state = sessions.get(key);
+
     if (!state || state.step !== 6) {
       await ctx.answerCallbackQuery('⚠️ Session topilmadi.');
       return;
@@ -238,7 +287,8 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
     });
 
     if (!parsed.success) {
-      await ctx.answerCallbackQuery('⚠️ Ma\'lumotlar noto\'g\'ri. /yangi dan qayta boshlang.');
+      const msg = parsed.error.errors[0]?.message ?? 'Noma\'lum xatolik';
+      await ctx.answerCallbackQuery(`⚠️ ${msg}`);
       sessions.delete(key);
       return;
     }
@@ -248,7 +298,14 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
       sessions.delete(key);
       await ctx.answerCallbackQuery('✅ O\'yin qo\'shildi!');
       await ctx.editMessageText(
-        `✅ *${game.name}* o'yini muvaffaqiyatli qo'shildi!\n\n🆔 ID: \`${game.id}\`\n🌐 URL: ${game.webAppUrl}`,
+        [
+          `✅ *${game.name}* o'yini muvaffaqiyatli qo'shildi!`,
+          ``,
+          `🆔 ID: \`${game.id}\``,
+          `🌐 URL: ${game.webAppUrl}`,
+          `👥 Jamoaviy: ${game.isTeamGame ? 'Ha' : 'Yo\'q'}`,
+          `🔢 O'yinchilar: ${game.minPlayers}–${game.maxPlayers}`,
+        ].join('\n'),
         { parse_mode: 'Markdown' },
       );
     } catch (err: any) {
@@ -259,8 +316,8 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
   }
 
   if (action === 'cancel') {
-    const chatId = parseInt(parts[2]);
-    const userId = parseInt(parts[3]);
+    const chatId = parseInt(parts[2], 10);
+    const userId = parseInt(parts[3], 10);
     sessions.delete(sessionKey(chatId, userId));
     await ctx.answerCallbackQuery('Bekor qilindi');
     await ctx.editMessageText('❌ O\'yin qo\'shish bekor qilindi.');
@@ -268,10 +325,11 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
   }
 }
 
+// ─── Keyboard builders ────────────────────────────────────────────────────────
+
 async function sendMinPlayersKeyboard(
   ctx: Context,
   state: YangiState,
-  key: string,
   chatId: number,
   userId: number,
 ): Promise<void> {
@@ -280,7 +338,6 @@ async function sendMinPlayersKeyboard(
   for (const n of options) {
     kb.text(`${n}`, `yangi:min:${n}:${chatId}:${userId}`);
   }
-
   await ctx.reply('*4-qadam:* Minimal nechta o\'yinchi kerak?', {
     parse_mode: 'Markdown',
     reply_markup: kb,
@@ -290,10 +347,9 @@ async function sendMinPlayersKeyboard(
 async function sendMaxPlayersKeyboard(
   ctx: Context,
   state: YangiState,
-  key: string,
+  chatId: number,
+  userId: number,
 ): Promise<void> {
-  const chatId = extractChatId(ctx);
-  const userId = extractUserId(ctx);
   const options = (state.isTeamGame ? [2, 4, 6] : [2, 3, 4, 5, 6]).filter(
     (n) => n >= (state.minPlayers ?? 2),
   );
@@ -301,17 +357,18 @@ async function sendMaxPlayersKeyboard(
   for (const n of options) {
     kb.text(`${n}`, `yangi:max:${n}:${chatId}:${userId}`);
   }
-
   await ctx.reply('*5-qadam:* Maksimal nechta o\'yinchi bo\'lishi mumkin?', {
     parse_mode: 'Markdown',
     reply_markup: kb,
   });
 }
 
-async function sendConfirmation(ctx: Context, state: YangiState, key: string): Promise<void> {
-  const chatId = extractChatId(ctx);
-  const userId = extractUserId(ctx);
-
+async function sendConfirmation(
+  ctx: Context,
+  state: YangiState,
+  chatId: number,
+  userId: number,
+): Promise<void> {
   const kb = new InlineKeyboard()
     .text('✅ Tasdiqlash', `yangi:confirm:${chatId}:${userId}`)
     .text('❌ Bekor qilish', `yangi:cancel:${chatId}:${userId}`);
@@ -329,6 +386,8 @@ async function sendConfirmation(ctx: Context, state: YangiState, key: string): P
     { parse_mode: 'Markdown', reply_markup: kb },
   );
 }
+
+// ─── Context extractors ───────────────────────────────────────────────────────
 
 function extractChatId(ctx: Context): number {
   return ctx.chat?.id ?? ctx.callbackQuery?.message?.chat.id ?? 0;
