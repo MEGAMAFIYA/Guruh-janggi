@@ -2,7 +2,9 @@ import { CommandContext, Context, InlineKeyboard } from 'grammy';
 import { canManageGames } from '../middleware/adminCheck';
 import { createGame, createGameSchema } from '../../services/gameService';
 
-// In-memory conversation state for /yangi multi-step dialog
+// ─── Conversation state ───────────────────────────────────────────────────────
+
+// In-memory session store for the /yangi multi-step dialog.
 // Key: `${chatId}:${userId}`
 interface YangiState {
   step: number;
@@ -27,30 +29,75 @@ export function clearYangiSession(chatId: number, userId: number): void {
   sessions.delete(sessionKey(chatId, userId));
 }
 
+// ─── /yangi command ───────────────────────────────────────────────────────────
+
 /**
- * /yangi — Multi-step game creation dialog (admin only).
+ * /yangi — Multi-step game creation dialog.
+ *
+ * Allowed for:
+ *   • Global admins (ADMIN_TELEGRAM_IDS) in any chat (private DM or group).
+ *   • Telegram admin/creator of the current group/supergroup.
+ *
+ * PRIVACY MODE NOTE:
+ *   Steps 1 (game name) and 2 (Web App URL) require the bot to receive plain
+ *   text messages from the user. In Telegram groups with Privacy Mode ENABLED
+ *   the bot only receives commands (starting with '/'), so those steps will not
+ *   work. Privacy Mode must be DISABLED in BotFather for the full /yangi wizard
+ *   to function inside a group chat.
+ *   In private (DM) chats Privacy Mode has no effect — all messages are always
+ *   delivered to the bot.
  */
 export async function handleYangi(ctx: CommandContext<Context>): Promise<void> {
-  const allowed = await canManageGames(ctx);
+  const userId = ctx.from?.id;
+  const chatType = ctx.chat?.type;
+
+  console.log(
+    `[yangi] /yangi from user=${userId} in ${chatType ?? 'unknown'}`,
+  );
+
+  let allowed: boolean;
+  try {
+    allowed = await canManageGames(ctx);
+  } catch (err) {
+    console.error('[yangi] canManageGames error:', err);
+    await ctx.reply('❌ Ruxsatni tekshirishda xatolik yuz berdi. Iltimos, keyinroq urinib ko\'ring.');
+    return;
+  }
+
   if (!allowed) {
-    await ctx.reply('⛔ Bu buyruq faqat guruh administratorlari yoki bot adminlari uchun.');
+    if (chatType === 'private') {
+      await ctx.reply(
+        '⛔ Bu buyruq faqat global bot adminlari uchun.\n\n' +
+          'Agar siz guruh admini bo\'lsangiz, guruhga kiring va u yerda /yangi deb yozing.',
+      );
+    } else {
+      await ctx.reply('⛔ Bu buyruq faqat guruh administratorlari yoki global bot adminlari uchun.');
+    }
     return;
   }
 
   const chatId = ctx.chat!.id;
-  const userId = ctx.from!.id;
+  sessions.set(sessionKey(chatId, userId!), { step: 1 });
 
-  sessions.set(sessionKey(chatId, userId), { step: 1 });
+  const privacyNote =
+    (chatType === 'group' || chatType === 'supergroup')
+      ? '\n\n⚠️ _Eslatma: Guruhda matn kiritish uchun bot "Privacy Mode" o\'chirilgan bo\'lishi kerak (BotFather → Bot Settings → Group Privacy → Turn off)._'
+      : '';
 
   await ctx.reply(
-    '🎮 *Yangi o\'yin qo\'shish*\n\n*1-qadam:* O\'yin nomini kiriting:\n\n_(Bekor qilish uchun /bekor deb yozing)_',
+    `🎮 *Yangi o\'yin qo\'shish*\n\n*1-qadam:* O\'yin nomini kiriting:\n\n_(Bekor qilish uchun /bekor deb yozing)_${privacyNote}`,
     { parse_mode: 'Markdown' },
   );
 }
 
+// ─── Multi-step text handler ──────────────────────────────────────────────────
+
 /**
  * Handles incoming text messages that are part of an active /yangi conversation.
  * Returns true if the message was consumed by this handler.
+ *
+ * Called from bot.on('message:text', ...). In groups with Privacy Mode ENABLED
+ * this handler never fires for plain text — only for messages that start with '/'.
  */
 export async function handleYangiStep(ctx: Context): Promise<boolean> {
   const chatId = ctx.chat?.id;
@@ -64,7 +111,7 @@ export async function handleYangiStep(ctx: Context): Promise<boolean> {
   const text = ctx.message?.text?.trim();
   if (!text) return false;
 
-  // Allow cancellation at any step
+  // Allow cancellation at any step (works in groups because /bekor is a command)
   if (text === '/bekor' || text.startsWith('/bekor@')) {
     sessions.delete(key);
     await ctx.reply('❌ O\'yin qo\'shish bekor qilindi.');
@@ -76,8 +123,8 @@ export async function handleYangiStep(ctx: Context): Promise<boolean> {
       return handleStepName(ctx, state, key, text);
     case 2:
       return handleStepUrl(ctx, state, key, chatId, userId, text);
-    // Steps 3 (team choice), 4 (min), 5 (max) are handled via inline keyboard callbacks.
-    // Text fallback for steps 4 and 5 (in case user types manually):
+    // Steps 3 (team choice), inline keyboard callbacks only.
+    // Steps 4 / 5 also have inline keyboards but accept typed numbers as fallback.
     case 4:
       return handleStepMinPlayers(ctx, state, key, text);
     case 5:
@@ -124,7 +171,6 @@ async function handleStepUrl(
     return true;
   }
 
-  // Only allow http and https — block javascript:, data:, ftp:, etc.
   if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
     await ctx.reply('⚠️ Faqat https:// yoki http:// URL qabul qilinadi.');
     return true;
@@ -192,6 +238,10 @@ async function handleStepMaxPlayers(
 
 // ─── Callback handler ─────────────────────────────────────────────────────────
 
+/**
+ * Handles all yangi:* callback query data routed from the central callback handler.
+ * Callback queries always reach the bot regardless of Telegram Privacy Mode.
+ */
 export async function handleYangiCallback(ctx: Context, data: string): Promise<void> {
   // Callback data formats:
   //   yangi:team:yes|no:<chatId>:<userId>
@@ -308,7 +358,9 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
         ].join('\n'),
         { parse_mode: 'Markdown' },
       );
+      console.log(`[yangi] Game created: id=${game.id} name="${game.name}" by user=${userId}`);
     } catch (err: any) {
+      console.error('[yangi] createGame error:', err);
       await ctx.answerCallbackQuery('❌ Xatolik yuz berdi.');
       await ctx.reply(`❌ O'yin qo'shishda xatolik: ${err.message}`);
     }

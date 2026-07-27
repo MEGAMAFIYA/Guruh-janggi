@@ -104,15 +104,37 @@ Replit PostgreSQL integratsiyasini ulang va `DATABASE_URL` secret sifatida qo'sh
 3. Bot nomini va username'ni kiriting
 4. Olingan tokenni `.env` → `BOT_TOKEN` ga qo'ying
 
-### Bot sozlamalari (ixtiyoriy)
+### Bot sozlamalari (BotFather)
 
 BotFather'da quyidagilarni sozlang:
+
+**1. Buyruqlarni ro'yxatdan o'tkazing:**
 ```
 /setcommands
 start - Botni ishga tushirish
 guruh - Guruhda o'yin tanlash
 yangi - Yangi o'yin qo'shish (admin)
+bekor - Joriy jarayonni bekor qilish
 ```
+
+**2. ⚠️ MUHIM: Guruh Privacy Mode ni o'chiring**
+
+By default Telegram bots in groups only receive **commands** (messages starting with `/`), not plain text messages. The `/yangi` game creation wizard requires plain text input (game name, Web App URL) from the user. **If Privacy Mode is enabled, those text input steps will be silently ignored in group chats.**
+
+To disable Privacy Mode in BotFather:
+```
+1. Open @BotFather in Telegram
+2. Send /mybots
+3. Select your bot
+4. Tap "Bot Settings"
+5. Tap "Group Privacy"
+6. Tap "Turn off"
+7. Confirm — BotFather should reply "Privacy mode is disabled"
+```
+
+> **Note:** Privacy Mode does NOT affect private (DM) chats. Global admins can always run `/yangi` in a private chat with the bot, regardless of Privacy Mode. Only group usage of `/yangi` requires Privacy Mode to be disabled.
+>
+> Commands `/start` and `/guruh` work correctly with Privacy Mode **enabled** (commands always reach the bot).
 
 ---
 
@@ -125,6 +147,29 @@ ADMIN_TELEGRAM_IDS=123456789,987654321
 ```
 
 Telegram ID'ingizni [@userinfobot](https://t.me/userinfobot) orqali bilishingiz mumkin.
+
+---
+
+## Render Environment Variables (ishga tushirishdan oldin sozlang)
+
+`render.yaml` da quyidagi o'zgaruvchilar `sync: false` bilan belgilangan — ya'ni ularni **Render Dashboard → Environment** bo'limida qo'lda kiritishingiz kerak:
+
+| Variable | Tavsif | Misol |
+|---|---|---|
+| `BOT_TOKEN` | @BotFather dan olingan bot token | `123456:ABCdef...` |
+| `ADMIN_TELEGRAM_IDS` | Global adminlarning Telegram ID'lari (vergul bilan) | `123456789` |
+| `WEBHOOK_URL` | Render servisingizning HTTPS manzili | `https://your-app.onrender.com` |
+| `WEBAPP_BASE_URL` | Mini App'lar joylashgan domen (CORS uchun) | `https://your-miniapp.example.com` |
+
+> **`WEBHOOK_URL` qanday topiladi:**
+> 1. Birinchi deploy'dan keyin Render Dashboard'dagi servis sahifasiga kiring.
+> 2. Yuqoridagi URL'ni ko'chiring (masalan `https://telegram-game-platform.onrender.com`).
+> 3. Shu URL'ni `WEBHOOK_URL` sifatida environment variable'ga kiriting.
+> 4. Servisni qayta deploy qiling — bot webhook'ni avtomatik ro'yxatdan o'tkazadi.
+
+> **Webhook tekshirish:** Botga xabar yuboring va Render Dashboard loglarida
+> `[Bot] update=... type=private ...` ko'ring. Ko'rinmasa — WEBHOOK_URL noto'g'ri yoki
+> bot restart kerak.
 
 ---
 
