@@ -28,3 +28,10 @@ waitForPort = 3000
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[userenv]
+
+[userenv.shared]
+ADMIN_TELEGRAM_IDS = "5756096918"
+NODE_ENV = "development"
+WEBAPP_BASE_URL = "https://example.com"
