@@ -11,6 +11,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
+    "db:seed": "ts-node --transpile-only prisma/seed.ts",
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
@@ -43,5 +44,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "prisma": {
+    "seed": "ts-node --transpile-only prisma/seed.ts"
   }
 }
