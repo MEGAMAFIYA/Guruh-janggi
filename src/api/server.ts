@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import http from 'http';
+import path from 'path';
 import { Server as SocketIOServer } from 'socket.io';
 import { Bot } from 'grammy';
 import { webhookCallback } from 'grammy';
@@ -11,8 +12,9 @@ import authRoutes from './routes/auth';
 import gamesRoutes from './routes/games';
 import matchesRoutes from './routes/matches';
 import { validateTelegramInitData } from './middleware/validateInitData';
-import { isUserInMatch } from '../services/matchService';
+import { getMatchWithPlayers, MatchWithPlayers } from '../services/matchService';
 import { findUserByTelegramId } from '../services/userService';
+import { registerKatapultaHandlers } from '../game-servers/katapulta/socketHandlers';
 
 export function createServer(bot?: Bot): {
   app: Express;
@@ -43,6 +45,15 @@ export function createServer(bot?: Bot): {
   );
 
   app.use(express.json({ limit: '10kb' }));
+
+  // ── Static Mini App files (e.g. /games/katapulta/index.html) ──────────────
+  // Served straight from the repo's `public/games/` folder (resolved via
+  // process.cwd(), so it works the same whether running `ts-node src/index.ts`
+  // in dev or `node dist/index.js` in prod — both are launched from the repo
+  // root). Not gated behind Telegram auth: Telegram opens this URL directly
+  // in the client's browser/webview; real auth happens afterwards via the
+  // Socket.IO handshake below.
+  app.use('/games', express.static(path.join(process.cwd(), 'public', 'games')));
 
   // ── Telegram Webhook endpoint ──────────────────────────────────────────────
   // Mounted only in production when a bot instance is provided.
@@ -110,7 +121,12 @@ export function createServer(bot?: Bot): {
       return next(new Error('AUTH_UNREGISTERED: use /start in the bot first'));
     }
 
-    const participant = await isUserInMatch(matchId, dbUser.id).catch(() => false);
+    const match: MatchWithPlayers | null = await getMatchWithPlayers(matchId).catch(() => null);
+    if (!match) {
+      return next(new Error('AUTH_NOT_FOUND: match does not exist'));
+    }
+
+    const participant = match.players.some((p) => p.userId === dbUser.id);
     if (!participant) {
       return next(new Error('AUTH_FORBIDDEN: you are not a participant of this match'));
     }
@@ -119,15 +135,17 @@ export function createServer(bot?: Bot): {
     socket.data.telegramId = parsed.user.id;
     socket.data.userId = dbUser.id;
     socket.data.matchId = matchId;
+    socket.data.match = match;
 
     next();
   });
 
   // ── Socket.IO room management ──────────────────────────────────────────────
   io.on('connection', (socket) => {
-    const { userId, matchId } = socket.data as {
+    const { userId, matchId, match } = socket.data as {
       userId: string;
       matchId: string;
+      match: MatchWithPlayers;
     };
 
     // Auto-join the authenticated match room
@@ -144,6 +162,13 @@ export function createServer(bot?: Bot): {
         payload: data.payload,
       });
     });
+
+    // ── Per-game wiring ───────────────────────────────────────────────────
+    // Add new games here following the same pattern: a `game-servers/<slug>`
+    // module exporting `register<Name>Handlers(io, socket, match)`.
+    if (match.game.slug === 'katapulta') {
+      registerKatapultaHandlers(io, socket, match);
+    }
 
     socket.on('disconnect', () => {
       console.log(`[Socket.IO] User ${userId} disconnected from match:${matchId}`);
