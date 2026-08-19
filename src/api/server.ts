@@ -23,6 +23,16 @@ export function createServer(bot?: Bot): {
 } {
   const app = express();
 
+  // Render (and most PaaS hosts) sit behind a reverse proxy that sets
+  // X-Forwarded-For. Without this, Express treats every request as coming
+  // from the proxy's internal address, which breaks express-rate-limit's
+  // per-user IP detection (ERR_ERL_UNEXPECTED_X_FORWARDED_FOR) and causes
+  // ALL users to share a single rate-limit bucket — eventually 429-blocking
+  // static game assets and Socket.IO handshakes for everyone.
+  // "1" = trust the first hop only (Render's own proxy), which is correct
+  // and safe for this single-proxy deployment.
+  app.set('trust proxy', 1);
+
   // ── Security middleware ────────────────────────────────────────────────────
   app.use(helmet());
   app.use(
