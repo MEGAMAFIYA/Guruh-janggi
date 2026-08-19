@@ -162,6 +162,27 @@ export async function findActiveStartedMatchForUser(
   }) as Promise<MatchWithPlayers | null>;
 }
 
+/**
+ * Finds a match this user currently participates in, in this chat, that is
+ * either still WAITING for players or already STARTED (i.e. cancellable).
+ * Used by /bekor to cancel "the game in progress" without the user having
+ * to specify a match ID.
+ */
+export async function findActiveMatchForUserInChat(
+  chatId: bigint,
+  userId: string,
+): Promise<MatchWithPlayers | null> {
+  return prisma.match.findFirst({
+    where: {
+      chatId,
+      status: { in: ['WAITING', 'STARTED'] },
+      players: { some: { userId } },
+    },
+    include: PLAYER_INCLUDE,
+    orderBy: { createdAt: 'desc' },
+  }) as Promise<MatchWithPlayers | null>;
+}
+
 export async function updateMatchMessageId(matchId: string, messageId: number): Promise<void> {
   await prisma.match.update({ where: { id: matchId }, data: { messageId } });
 }
