@@ -4,6 +4,7 @@ import { userSyncMiddleware } from './middleware/userSync';
 import { handleStart } from './commands/start';
 import { handleGuruh } from './commands/guruh';
 import { handleYangi, handleYangiStep } from './commands/yangi';
+import { handleBekor } from './commands/bekor';
 import { handleCallbackQuery } from './handlers/callbackQuery';
 import { setBotInstance } from '../services/notificationService';
 
@@ -45,9 +46,18 @@ export function createBot(): Bot {
   bot.command('start', handleStart);
   bot.command('guruh', handleGuruh);
   bot.command('yangi', handleYangi);
+  bot.command('bekor', handleBekor);
 
   // ── Callback queries ──────────────────────────────────────────────────────
   bot.on('callback_query:data', handleCallbackQuery);
+
+  // ── Bot command menu ("/" button + private-chat Menu button) ──────────────
+  // Lets users see the full list of available commands by tapping "/" in the
+  // compose box, or the Menu button in a private chat with the bot. Uses
+  // separate scopes so group-only commands don't clutter the private-chat menu.
+  registerBotCommands(bot).catch((err) => {
+    console.error('[Bot] Failed to register command menu:', err);
+  });
 
   // ── Multi-step text messages (/yangi dialog) ──────────────────────────────
   // NOTE: In Telegram groups with Privacy Mode ENABLED, the bot only receives
@@ -81,4 +91,31 @@ export function createBot(): Bot {
   });
 
   return bot;
+}
+
+/**
+ * Registers the command list shown when a user taps "/" in the message box,
+ * and (in private chats) the bot's Menu button. Different scopes are used so
+ * group-specific commands (/guruh, /yangi, /bekor) don't show up as options
+ * in a private DM with the bot, where only /start makes sense.
+ */
+async function registerBotCommands(bot: Bot): Promise<void> {
+  const groupCommands = [
+    { command: 'guruh', description: 'O\'ynash uchun o\'yin tanlash' },
+    { command: 'yangi', description: 'Yangi o\'yin qo\'shish (admin)' },
+    { command: 'bekor', description: 'Joriy o\'yinni yoki /yangi jarayonini bekor qilish' },
+  ];
+
+  await bot.api.setMyCommands(
+    [{ command: 'start', description: 'Botni ishga tushirish / ro\'yxatdan o\'tish' }],
+    { scope: { type: 'all_private_chats' } },
+  );
+
+  await bot.api.setMyCommands(groupCommands, { scope: { type: 'all_group_chats' } });
+
+  // Fallback/default scope — covers any chat type not matched above.
+  await bot.api.setMyCommands([
+    { command: 'start', description: 'Botni ishga tushirish / ro\'yxatdan o\'tish' },
+    ...groupCommands,
+  ]);
 }
