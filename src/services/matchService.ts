@@ -136,6 +136,32 @@ export async function findWaitingMatchInChat(
   }) as Promise<MatchWithPlayers | null>;
 }
 
+/**
+ * Finds a match this user is currently a participant of, in this chat/game,
+ * that has already been started but not yet finished. Used to prevent
+ * `game:select` from spawning a duplicate second match (and a duplicate
+ * "start game" button) when a user double-taps the button right after the
+ * first tap already filled and auto-started a match — without this check,
+ * `findWaitingMatchInChat` finds nothing (the first match is no longer
+ * WAITING) and a brand new, independent match gets created instead.
+ */
+export async function findActiveStartedMatchForUser(
+  chatId: bigint,
+  gameId: string,
+  userId: string,
+): Promise<MatchWithPlayers | null> {
+  return prisma.match.findFirst({
+    where: {
+      chatId,
+      gameId,
+      status: 'STARTED',
+      players: { some: { userId } },
+    },
+    include: PLAYER_INCLUDE,
+    orderBy: { startedAt: 'desc' },
+  }) as Promise<MatchWithPlayers | null>;
+}
+
 export async function updateMatchMessageId(matchId: string, messageId: number): Promise<void> {
   await prisma.match.update({ where: { id: matchId }, data: { messageId } });
 }
