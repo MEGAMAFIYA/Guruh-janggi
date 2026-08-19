@@ -2,6 +2,7 @@ import { Context, InlineKeyboard } from 'grammy';
 import { findGameById } from '../../services/gameService';
 import {
   createMatch,
+  findActiveStartedMatchForUser,
   findWaitingMatchInChat,
   getMatchWithPlayers,
   isUserInMatch,
@@ -66,6 +67,20 @@ async function handleGameSelect(ctx: Context, data: string): Promise<void> {
   const dbUser = await findUserByTelegramId(userId);
   if (!dbUser) {
     await ctx.reply('⚠️ Avval /start buyrug\'ini yuboring');
+    return;
+  }
+
+  // Guard against double-tap / re-click races: if this user already has a
+  // match for this game in this chat that was JUST started (e.g. their
+  // previous tap already filled the slots and auto-started it), don't spin
+  // up a brand new, independent match — that would split the two players
+  // across two different game rooms and leave both stuck waiting for an
+  // opponent who is actually in the other match. Just resend their link.
+  const alreadyStarted = await findActiveStartedMatchForUser(BigInt(chatId), gameId, dbUser.id);
+  if (alreadyStarted) {
+    await ctx.reply(
+      '✅ Sizda bu o\'yin uchun allaqachon faol match bor. Shaxsiy xabaringizdagi "🎮 O\'yinni boshlash" tugmasini qayta bosing.',
+    );
     return;
   }
 
