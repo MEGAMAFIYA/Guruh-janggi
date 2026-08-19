@@ -1383,4 +1383,92 @@ function render(){
 ===================================================================== */
 let lastT = performance.now();
 function loop(now){
-  request
+  requestAnimationFrame(loop);
+  if(W < H) return; // paused while in portrait
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  dt = Math.min(dt, 0.033);
+  state.time += dt;
+
+  if(state.gameStatus === "playing"){
+    const p1 = state.players.player1;
+    if(!p1.burning){
+      p1.x = clamp(p1.x + moveDir * 52 * dt, P1_RANGE[0], P1_RANGE[1]);
+    }
+    const p2 = state.players.player2;
+    if(!p2.burning){
+      p2.x = clamp(p2.x + (p2.remoteMoveDir||0) * 52 * dt, P2_RANGE[0], P2_RANGE[1]);
+    }
+    if (moveDir !== lastSentMoveDir){
+      lastSentMoveDir = moveDir;
+      Network.sendMove(moveDir);
+    }
+    updateProjectiles(dt);
+    updateFireZones();
+  }
+  updateParticles(dt);
+  updateCamera(dt);
+  drawCooldown();
+
+  render();
+}
+requestAnimationFrame(loop);
+
+/* =====================================================================
+   UI WIRING — game over / rematch
+===================================================================== */
+document.getElementById("restartBtn").addEventListener("click", () => {
+  const btn = document.getElementById("restartBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Yuborildi...";
+  document.getElementById("rematchStatus").style.display = "block";
+  document.getElementById("rematchStatus").textContent = "⏳ Raqibni kutyapmiz...";
+  Network.sendRematchRequest();
+});
+function showGameOver(){
+  const won = state.winnerId === "player1";
+  const overlay = document.getElementById("gameOverOverlay");
+  const title = document.getElementById("goTitle");
+  const text = document.getElementById("goText");
+  title.textContent = won ? "G'ALABA!" : "MAG'LUBIYAT";
+  title.className = won ? "win" : "lose";
+  text.textContent = won ? "Siz raqibni mag'lub etdingiz." : "Raqib sizni mag'lub etdi.";
+  document.getElementById("restartBtn").disabled = false;
+  document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
+  document.getElementById("rematchStatus").style.display = "none";
+  overlay.classList.remove("hidden");
+}
+function resetGameLocal(){
+  state.players.player1.health = HEART_MAX;
+  state.players.player2.health = HEART_MAX;
+  state.players.player1.x = P1_START_X;
+  state.players.player2.x = P2_START_X;
+  state.players.player1.ammo = { stone: Infinity, triple: 4, explosive: 2 };
+  state.players.player1.currentAmmoType = "stone";
+  state.players.player1.cooldownUntil = 0;
+  state.players.player1.burning = false;
+  state.players.player2.burning = false;
+  state.players.player2.remoteMoveDir = 0;
+  moveDir = 0; lastSentMoveDir = 0;
+  state.projectiles = [];
+  state.fireZones = [];
+  camera.holdX = null; camera.holdUntil = 0;
+  particles.length = 0;
+  spawnDecorations();
+  updateHeartsUI();
+  renderAmmoUI();
+}
+
+/* =====================================================================
+   INIT
+===================================================================== */
+resize();
+spawnDecorations();
+updateHeartsUI();
+renderAmmoUI();
+Network.init();
+
+})();
+</script>
+</body>
+</html>
