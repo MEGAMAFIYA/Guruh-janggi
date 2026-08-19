@@ -86,6 +86,13 @@ export function getMatchState(matchId: string): KatapultaMatchState | undefined 
   return matchStates.get(matchId);
 }
 
+/** Immediately drops the in-memory state for a match (used when a match is cancelled). */
+export function deleteMatchState(matchId: string): void {
+  const state = matchStates.get(matchId);
+  if (state?.gcTimer) clearTimeout(state.gcTimer);
+  matchStates.delete(matchId);
+}
+
 export function roleForUser(state: KatapultaMatchState, userId: string): PlayerRole | null {
   if (state.players.player1.userId === userId) return 'player1';
   if (state.players.player2.userId === userId) return 'player2';
