@@ -111,12 +111,10 @@ export async function handleYangiStep(ctx: Context): Promise<boolean> {
   const text = ctx.message?.text?.trim();
   if (!text) return false;
 
-  // Allow cancellation at any step (works in groups because /bekor is a command)
-  if (text === '/bekor' || text.startsWith('/bekor@')) {
-    sessions.delete(key);
-    await ctx.reply('❌ O\'yin qo\'shish bekor qilindi.');
-    return true;
-  }
+  // NOTE: cancellation is now handled by the top-level /bekor command
+  // (see src/bot/commands/bekor.ts), which is registered before this
+  // message:text handler and checks for an active /yangi session itself.
+  // A literal "/bekor" text will never reach this point.
 
   switch (state.step) {
     case 1:
