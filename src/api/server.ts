@@ -15,6 +15,7 @@ import { validateTelegramInitData } from './middleware/validateInitData';
 import { getMatchWithPlayers, MatchWithPlayers } from '../services/matchService';
 import { findUserByTelegramId } from '../services/userService';
 import { registerKatapultaHandlers } from '../game-servers/katapulta/socketHandlers';
+import { setIoInstance } from '../services/realtimeService';
 
 export function createServer(bot?: Bot): {
   app: Express;
@@ -184,6 +185,10 @@ export function createServer(bot?: Bot): {
       console.log(`[Socket.IO] User ${userId} disconnected from match:${matchId}`);
     });
   });
+
+  // Make the Socket.IO server reachable from outside this module (e.g. the
+  // /bekor bot command needs to notify connected clients of a cancellation).
+  setIoInstance(io);
 
   return { app, httpServer, io };
 }
