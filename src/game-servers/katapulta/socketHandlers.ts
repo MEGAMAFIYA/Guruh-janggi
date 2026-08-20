@@ -63,24 +63,42 @@ export function registerKatapultaHandlers(
   const opp = opponentRole(role);
   const oppState = state.players[opp];
 
+  // Tell this client who they are and whether the opponent has already
+  // confirmed presence (so a late joiner can immediately be prompted with
+  // "opponent is already here, tap the button").
   socket.emit('katapulta:youAre', {
     role,
     opponentName: oppState.firstName,
+    opponentPresent: oppState.present,
     state: serializePublicState(state),
   });
 
-  if (oppState.connected) {
-    io.to(room).emit('katapulta:opponentConnected', { role });
-  }
-
-  // Both connected at least once and match not yet finished -> go live.
-  if (me.connected && oppState.connected && state.status === 'waiting') {
-    state.status = 'playing';
-    io.to(room).emit('katapulta:bothReady', { state: serializePublicState(state) });
-  } else if (state.status === 'playing') {
-    // Reconnect mid-game: bring this client up to date immediately.
+  // Reconnect mid-game: bring this client straight back into the live match.
+  if (state.status === 'playing') {
     socket.emit('katapulta:stateSync', { state: serializePublicState(state) });
   }
+
+  // ── Explicit "Men shu yerdaman" confirmation ──────────────────────────
+  // A raw socket connection is NOT enough to start the match — the player
+  // must tap the in-app button first. This lets a player open the mini app,
+  // warm up alone (move their own catapult) without revealing themselves to
+  // an opponent who hasn't shown up yet, and only go live once BOTH players
+  // have explicitly confirmed they're there.
+  socket.on('katapulta:imHere', () => {
+    if (me.present) return; // idempotent — ignore duplicate taps
+    me.present = true;
+
+    // Let the other side know a player just confirmed presence. If the
+    // opponent is already connected but hasn't tapped their own button yet,
+    // this nudges their UI ("raqib keldi, siz ham bosing"). If the opponent
+    // isn't connected at all yet, this is a harmless no-op (empty room).
+    socket.to(room).emit('katapulta:opponentHere', { role });
+
+    if (state.status === 'waiting' && me.present && oppState.present) {
+      state.status = 'playing';
+      io.to(room).emit('katapulta:bothReady', { state: serializePublicState(state) });
+    }
+  });
 
   // ── Movement ────────────────────────────────────────────────────────────
   socket.on('katapulta:move', (payload: { dir: number }) => {
