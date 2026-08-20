@@ -21,6 +21,13 @@ export interface KatapultaPlayerState {
   connected: boolean;
   socketId: string | null;
   rematchReady: boolean;
+  /**
+   * True once this player has explicitly tapped the "Men shu yerdaman"
+   * button in the mini app — distinct from `connected` (raw socket link).
+   * A player can be `connected` (socket open, page loaded) without being
+   * `present` yet; the match only goes live once BOTH players are `present`.
+   */
+  present: boolean;
 }
 
 export interface KatapultaMatchState {
@@ -51,6 +58,7 @@ function freshPlayer(
     connected: false,
     socketId: null,
     rematchReady: false,
+    present: false,
   };
 }
 
@@ -139,6 +147,7 @@ export function serializePublicState(state: KatapultaMatchState) {
     x: p.x,
     health: p.health,
     connected: p.connected,
+    present: p.present,
   });
   return {
     status: state.status,
