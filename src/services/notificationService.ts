@@ -5,6 +5,13 @@ import { getTeamLabel } from '../matchmaking/teamAssigner';
 let botInstance: Bot | null = null;
 let cachedBotUsername: string | null = null;
 
+// Changes once per server restart (i.e. once per deploy). Appended to every
+// Web App URL below so Telegram's in-app WebView treats it as a brand new
+// URL and can never silently serve a cached (stale) index.html from a
+// previous deploy — the #1 cause of "the button doesn't show up" reports
+// that turn out to be an old cached page, not an actual code bug.
+const BUILD_ID = Date.now().toString(36);
+
 export function setBotInstance(bot: Bot): void {
   botInstance = bot;
   cachedBotUsername = null; // reset cache when bot instance changes
@@ -99,5 +106,6 @@ function buildPlayerWebAppUrl(match: MatchWithPlayers, telegramId: string): stri
   const url = new URL(match.game.webAppUrl);
   url.searchParams.set('matchId', match.id);
   url.searchParams.set('tgId', telegramId);
+  url.searchParams.set('v', BUILD_ID);
   return url.toString();
 }
