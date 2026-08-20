@@ -198,14 +198,15 @@
   <div class="overlay" id="tutorialOverlay">
     <div class="card">
       <h1>KATAPULTA</h1>
+      <button class="bigBtn" id="startBtn" style="display:none;">📍 Men shu yerdaman</button>
+      <div class="spinner" id="waitSpinner" style="display:none;"></div>
+      <p id="tutorialStatus">Ulanmoqda...</p>
+      <button class="bigBtn" id="retryBtn" style="display:none;">🔄 Qayta urinish</button>
       <p>Siz chapdasiz 🟦, raqib o'ngda 🟥. Har birida 5 jon ❤️❤️❤️❤️❤️ bor.</p>
       <p class="tip">↔️ &nbsp;o'ng tugmalar bilan katapultangizni siljiting</p>
       <p class="tip">🎯 &nbsp;pastga tortib nishonga oling, qo'yib yuboring — otiladi</p>
       <p class="tip">🪨/🎯/🔥 &nbsp;yuqoridagi ikonkani bosib o'q turini almashtiring</p>
       <p class="tip">⏱️ &nbsp;har otishdan keyin 5 soniya kutish kerak</p>
-      <div class="spinner" id="waitSpinner" style="display:none;"></div>
-      <p id="tutorialStatus">Ulanmoqda...</p>
-      <button class="bigBtn" id="startBtn" style="display:none;">📍 Men shu yerdaman</button>
     </div>
   </div>
 
@@ -356,12 +357,27 @@ const Network = {
       transports: ["websocket", "polling"],
     });
 
+    // Safety net: if the handshake just hangs (bad network, blocked
+    // websocket/polling, server hiccup) with no error and no response,
+    // don't leave the player staring at "Ulanmoqda..." forever — surface a
+    // manual retry after a reasonable timeout.
+    const connectTimeout = setTimeout(() => {
+      if (!this.connected) {
+        setTutorialStatus("❌ Ulanish juda uzoq davom etyapti. Internetni tekshirib, qayta urinib ko'ring.", false);
+        document.getElementById("retryBtn").style.display = "inline-block";
+      }
+    }, 12000);
+
     this.socket.on("connect_error", (err) => {
+      clearTimeout(connectTimeout);
       setTutorialStatus("❌ Ulanishda xatolik: " + (err && err.message ? err.message : "noma'lum"), false);
+      document.getElementById("retryBtn").style.display = "inline-block";
     });
 
     this.socket.on("katapulta:error", (msg) => {
+      clearTimeout(connectTimeout);
       setTutorialStatus("❌ " + msg, false);
+      document.getElementById("retryBtn").style.display = "inline-block";
     });
 
     this.socket.on("match:cancelled", () => {
@@ -371,6 +387,7 @@ const Network = {
     });
 
     this.socket.on("katapulta:youAre", ({ role, opponentName, opponentPresent, state: s }) => {
+      clearTimeout(connectTimeout);
       this.myRole = role;
       this.connected = true;
       this.opponentName = opponentName || "Raqib";
@@ -499,6 +516,7 @@ function applyRemoteState(s){
  */
 function showImHereButton(opponentPresent){
   const btn = document.getElementById("startBtn");
+  document.getElementById("retryBtn").style.display = "none";
   setTutorialStatus(
     opponentPresent
       ? "✅ Raqib (" + (Network.opponentName || "...") + ") allaqachon shu yerda! Siz ham tugmani bosing:"
@@ -516,6 +534,10 @@ document.getElementById("startBtn").addEventListener("click", () => {
   btn.textContent = "⏳ Kutilmoqda...";
   Network.sendImHere();
   enterSolo();
+});
+
+document.getElementById("retryBtn").addEventListener("click", () => {
+  window.location.reload();
 });
 
 /**
