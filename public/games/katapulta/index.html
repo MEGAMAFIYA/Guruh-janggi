@@ -370,7 +370,10 @@ const Network = {
 
     this.socket.on("connect_error", (err) => {
       clearTimeout(connectTimeout);
-      setTutorialStatus("❌ Ulanishda xatolik: " + (err && err.message ? err.message : "noma'lum"), false);
+      const detail = err && err.message ? err.message : "noma'lum";
+      const extra = err && err.description ? (" [" + err.description + "]") : "";
+      console.error("[Katapulta] connect_error:", err);
+      setTutorialStatus("❌ Ulanishda xatolik: " + detail + extra, false);
       document.getElementById("retryBtn").style.display = "inline-block";
     });
 
