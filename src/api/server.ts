@@ -17,6 +17,28 @@ import { findUserByTelegramId } from '../services/userService';
 import { registerKatapultaHandlers } from '../game-servers/katapulta/socketHandlers';
 import { setIoInstance } from '../services/realtimeService';
 
+/**
+ * Normalizes a configured origin for comparison against the browser's
+ * `Origin` header (which never has a trailing slash or path). Without this,
+ * a WEBAPP_BASE_URL env var set with a trailing slash (e.g.
+ * "https://foo.onrender.com/" instead of "https://foo.onrender.com")
+ * silently fails strict CORS origin matching — Socket.IO then rejects the
+ * connection at the transport level, before our own auth/logging code ever
+ * runs, which looks exactly like "the client is stuck on connecting, no
+ * server logs at all".
+ */
+function normalizeOrigin(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
+const ALLOWED_ORIGIN = normalizeOrigin(config.webApp.baseUrl || '*');
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (ALLOWED_ORIGIN === '*') return true;
+  if (!origin) return true; // non-browser clients (curl, server-to-server) send no Origin
+  return normalizeOrigin(origin) === ALLOWED_ORIGIN;
+}
+
 export function createServer(bot?: Bot): {
   app: Express;
   httpServer: http.Server;
@@ -34,11 +56,26 @@ export function createServer(bot?: Bot): {
   // and safe for this single-proxy deployment.
   app.set('trust proxy', 1);
 
+  // ── Blanket request logger ──────────────────────────────────────────────
+  // Logs EVERY inbound HTTP request before any other middleware touches it.
+  // This is the ground truth for "did the request even reach the server":
+  // if a mini app player reports a stuck screen and NOTHING shows up here
+  // for their /games/... or /socket.io/... requests, the problem is on the
+  // network/client side (blocked, wrong URL, DNS, etc.) — not in our code.
+  // If entries DO show up here but nothing after, the problem is inside our
+  // handling of that specific request.
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    console.log(`[HTTP] ${req.method} ${req.originalUrl}`);
+    next();
+  });
+
   // ── Security middleware ────────────────────────────────────────────────────
   app.use(helmet());
   app.use(
     cors({
-      origin: config.webApp.baseUrl || '*',
+      origin: (origin, callback) => {
+        callback(null, isAllowedOrigin(origin));
+      },
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     }),
@@ -116,9 +153,24 @@ export function createServer(bot?: Bot): {
   const httpServer = http.createServer(app);
   const io = new SocketIOServer(httpServer, {
     cors: {
-      origin: config.webApp.baseUrl || '*',
+      origin: (origin, callback) => {
+        callback(null, isAllowedOrigin(origin));
+      },
       methods: ['GET', 'POST'],
     },
+  });
+
+  // Catches connection failures at the Engine.IO transport layer — BEFORE
+  // our io.use() auth middleware even runs (e.g. CORS origin mismatch, bad
+  // handshake request, transport negotiation failure). If a client is stuck
+  // and NEITHER this nor "[Socket.IO] Rejected handshake" nor
+  // "[Socket.IO] User X connected" ever appears for their attempt, the
+  // request never reached this server process at all.
+  io.engine.on('connection_error', (err) => {
+    console.warn(
+      `[Socket.IO] Engine-level connection_error: code=${err.code} message="${err.message}" ` +
+        `context=${JSON.stringify(err.context ?? {})}`,
+    );
   });
 
   // ── Socket.IO authentication middleware ────────────────────────────────────
