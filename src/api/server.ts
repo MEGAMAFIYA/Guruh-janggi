@@ -70,7 +70,26 @@ export function createServer(bot?: Bot): {
   });
 
   // ── Security middleware ────────────────────────────────────────────────────
-  app.use(helmet());
+  // Helmet's default Content-Security-Policy sets `script-src 'self'` with NO
+  // 'unsafe-inline'. The katapulta mini app's entire game client is one
+  // inline <script> block (no separate .js bundle) — under the default CSP
+  // the browser silently REFUSES to execute it. No console error visible to
+  // the player, no network request ever made, the page just sits frozen at
+  // whatever static HTML was there before any JS ran (which is exactly the
+  // "Ulanmoqda..." placeholder text baked into the HTML). This was the real
+  // cause of "it's stuck on connecting and never even tries the socket".
+  // We keep every other helmet default and only relax script-src (to allow
+  // our inline script + the official Telegram Web App SDK from telegram.org).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': ["'self'", "'unsafe-inline'", 'https://telegram.org'],
+        },
+      },
+    }),
+  );
   app.use(
     cors({
       origin: (origin, callback) => {
