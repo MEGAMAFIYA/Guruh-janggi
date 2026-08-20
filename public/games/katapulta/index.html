@@ -42,7 +42,7 @@
     border-radius:14px; padding:6px 10px; backdrop-filter:blur(2px);
   }
   .heartsPanel.self{ left:calc(env(safe-area-inset-left,0px) + 10px); border-color:var(--p1); }
-  .heartsPanel.opp{ right:calc(env(safe-area-inset-right,0px) + 10px); border-color:var(--p2); }
+  .heartsPanel.opp{ right:calc(env(safe-area-inset-right,0px) + 10px); border-color:var(--p2); display:none; }
   .heartsPanel .label{font-size:11px; font-weight:800; letter-spacing:.5px; color:var(--cream); opacity:.85; margin-right:2px;}
   .heartsPanel.self .label{color:var(--p1);}
   .heartsPanel.opp .label{color:var(--p2);}
@@ -205,7 +205,7 @@
       <p class="tip">⏱️ &nbsp;har otishdan keyin 5 soniya kutish kerak</p>
       <div class="spinner" id="waitSpinner" style="display:none;"></div>
       <p id="tutorialStatus">Ulanmoqda...</p>
-      <button class="bigBtn" id="startBtn" style="display:none;">Boshlash</button>
+      <button class="bigBtn" id="startBtn" style="display:none;">📍 Men shu yerdaman</button>
     </div>
   </div>
 
@@ -337,6 +337,7 @@ const Network = {
   socket: null,
   myRole: null,      // "player1" | "player2" — assigned by the server
   connected: false,
+  opponentName: "",
 
   init(){
     if (!MATCH_ID) {
@@ -369,15 +370,23 @@ const Network = {
       try { this.socket.disconnect(); } catch(e) {}
     });
 
-    this.socket.on("katapulta:youAre", ({ role, opponentName, state: s }) => {
+    this.socket.on("katapulta:youAre", ({ role, opponentName, opponentPresent, state: s }) => {
       this.myRole = role;
       this.connected = true;
+      this.opponentName = opponentName || "Raqib";
       applyRemoteState(s);
-      setTutorialStatus("Raqibni kutyapmiz: " + (opponentName || "..."), true);
+      showImHereButton(opponentPresent);
     });
 
-    this.socket.on("katapulta:opponentConnected", () => {
-      setTutorialStatus("Raqib ulandi! Boshlanmoqda...", true);
+    this.socket.on("katapulta:opponentHere", () => {
+      if (state.gameStatus === "solo") {
+        // We already confirmed ourselves — opponent just confirmed too,
+        // katapulta:bothReady will follow right behind this.
+        setBadgeSub("Raqib keldi! Boshlanmoqda...");
+      } else {
+        // We're still on the "Men shu yerdaman" screen — nudge the user.
+        setTutorialStatus("✅ Raqib (" + (this.opponentName || "...") + ") keldi! Endi siz ham \"Men shu yerdaman\" tugmasini bosing.", false);
+      }
     });
 
     this.socket.on("katapulta:bothReady", ({ state: s }) => {
@@ -458,6 +467,9 @@ const Network = {
   },
   sendRematchRequest(){
     if (this.socket && this.connected) this.socket.emit("katapulta:rematchRequest");
+  },
+  sendImHere(){
+    if (this.socket && this.connected) this.socket.emit("katapulta:imHere");
   }
 };
 
@@ -479,9 +491,55 @@ function applyRemoteState(s){
   if (opp){ state.players.player2.x = opp.x; state.players.player2.health = opp.health; }
   updateHeartsUI();
 }
+
+/**
+ * Called once the server confirms who we are. Shows the "Men shu yerdaman"
+ * button instead of auto-starting — the player must explicitly tap it
+ * before they (or their opponent) are considered "in" the match.
+ */
+function showImHereButton(opponentPresent){
+  const btn = document.getElementById("startBtn");
+  setTutorialStatus(
+    opponentPresent
+      ? "✅ Raqib (" + (Network.opponentName || "...") + ") allaqachon shu yerda! Siz ham tugmani bosing:"
+      : "Tayyor bo'lsangiz, pastdagi tugmani bosing:",
+    false,
+  );
+  btn.style.display = "inline-block";
+  btn.disabled = false;
+  btn.textContent = "📍 Men shu yerdaman";
+}
+
+document.getElementById("startBtn").addEventListener("click", () => {
+  const btn = document.getElementById("startBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Kutilmoqda...";
+  Network.sendImHere();
+  enterSolo();
+});
+
+/**
+ * Fires the moment THIS player taps "Men shu yerdaman". Hides the overlay
+ * so they can move their own catapult around right away, but the opponent
+ * stays invisible (state.opponentVisible = false) until the opponent also
+ * confirms presence and katapulta:bothReady arrives.
+ */
+function enterSolo(){
+  document.getElementById("tutorialOverlay").classList.add("hidden");
+  document.getElementById("waitSpinner").style.display = "none";
+  state.gameStatus = "solo";
+  state.opponentVisible = false;
+  const oppPanel = document.querySelector(".heartsPanel.opp");
+  if (oppPanel) oppPanel.style.display = "none";
+  setBadgeSub("Yakka mashq — raqibni kutmoqda...");
+}
+
 function beginPlaying(){
   document.getElementById("tutorialOverlay").classList.add("hidden");
   document.getElementById("waitSpinner").style.display = "none";
+  state.opponentVisible = true;
+  const oppPanel = document.querySelector(".heartsPanel.opp");
+  if (oppPanel) oppPanel.style.display = "flex";
   setBadgeSub("Jonli o'yin");
   state.gameStatus = "playing";
 }
@@ -491,7 +549,8 @@ function beginPlaying(){
 ===================================================================== */
 const state = {
   map: { name: THEME.name, width: MAP_WIDTH },
-  gameStatus: "connecting", // connecting | tutorial | playing | gameover
+  gameStatus: "connecting", // connecting | solo | playing | gameover
+  opponentVisible: false, // becomes true only once BOTH players confirm "Men shu yerdaman"
   winnerId: null,
   players: {
     player1: {
@@ -633,7 +692,7 @@ bindHold(document.getElementById("btnRight"), ()=>moveDir=1, ()=>{ if(moveDir===
 /* panning the camera by dragging on the game canvas itself (not on buttons) */
 let panTouchId = null, panStartX = 0, panStartOffset = 0;
 canvas.addEventListener("touchstart", e => {
-  if(state.gameStatus!=="playing") return;
+  if(state.gameStatus!=="playing" && state.gameStatus!=="solo") return;
   const t = e.changedTouches[0];
   panTouchId = t.identifier;
   panStartX = t.clientX;
@@ -1369,9 +1428,11 @@ function render(){
   drawCacti();
   drawFireZones();
   const p1Dir = state.players.player1.burning ? 0 : moveDir;
-  const p2Dir = state.players.player2.burning ? 0 : state.players.player2.remoteMoveDir;
   drawCatapult(state.players.player1, "#2fd6c8", "#178f85", p1Dir);
-  drawCatapult(state.players.player2, "#e94b5a", "#a5303c", p2Dir);
+  if (state.opponentVisible) {
+    const p2Dir = state.players.player2.burning ? 0 : state.players.player2.remoteMoveDir;
+    drawCatapult(state.players.player2, "#e94b5a", "#a5303c", p2Dir);
+  }
   drawProjectiles();
   drawParticles();
   drawTrajectoryPreview();
@@ -1390,11 +1451,14 @@ function loop(now){
   dt = Math.min(dt, 0.033);
   state.time += dt;
 
-  if(state.gameStatus === "playing"){
+  if(state.gameStatus === "playing" || state.gameStatus === "solo"){
     const p1 = state.players.player1;
     if(!p1.burning){
       p1.x = clamp(p1.x + moveDir * 52 * dt, P1_RANGE[0], P1_RANGE[1]);
     }
+  }
+
+  if(state.gameStatus === "playing"){
     const p2 = state.players.player2;
     if(!p2.burning){
       p2.x = clamp(p2.x + (p2.remoteMoveDir||0) * 52 * dt, P2_RANGE[0], P2_RANGE[1]);
