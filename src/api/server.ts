@@ -1,4 +1,4 @@
-import express, { Express, Request, Response } from 'express';
+import express, { Express, NextFunction, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -64,7 +64,24 @@ export function createServer(bot?: Bot): {
   // root). Not gated behind Telegram auth: Telegram opens this URL directly
   // in the client's browser/webview; real auth happens afterwards via the
   // Socket.IO handshake below.
-  app.use('/games', express.static(path.join(process.cwd(), 'public', 'games')));
+  //
+  // no-store: Telegram's in-app WebView (especially on Android) aggressively
+  // caches Mini App pages across sessions. Without this, players can keep
+  // seeing an OLD version of index.html for days after a new deploy — which
+  // looks exactly like "nothing happens" bugs that don't actually exist in
+  // the current code. Game assets change often during development, so we'd
+  // rather take the tiny bandwidth hit than debug phantom stale-cache bugs.
+  app.use(
+    '/games',
+    (req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      next();
+    },
+    express.static(path.join(process.cwd(), 'public', 'games'), {
+      etag: false,
+      lastModified: false,
+    }),
+  );
 
   // ── Telegram Webhook endpoint ──────────────────────────────────────────────
   // Mounted only in production when a bot instance is provided.
@@ -114,31 +131,39 @@ export function createServer(bot?: Bot): {
     };
 
     if (!initData) {
+      console.warn(`[Socket.IO] Rejected handshake (no initData) socket=${socket.id}`);
       return next(new Error('AUTH_MISSING: initData is required'));
     }
 
     const parsed = validateTelegramInitData(initData);
     if (!parsed || !parsed.user) {
+      console.warn(`[Socket.IO] Rejected handshake (invalid initData) socket=${socket.id}`);
       return next(new Error('AUTH_INVALID: invalid or expired Telegram initData'));
     }
 
     if (!matchId) {
+      console.warn(`[Socket.IO] Rejected handshake (no matchId) socket=${socket.id}`);
       return next(new Error('AUTH_MISSING: matchId is required'));
     }
 
     // Verify the user is a participant of the requested match
     const dbUser = await findUserByTelegramId(parsed.user.id).catch(() => null);
     if (!dbUser) {
+      console.warn(`[Socket.IO] Rejected handshake (unregistered user) tgId=${parsed.user.id}`);
       return next(new Error('AUTH_UNREGISTERED: use /start in the bot first'));
     }
 
     const match: MatchWithPlayers | null = await getMatchWithPlayers(matchId).catch(() => null);
     if (!match) {
+      console.warn(`[Socket.IO] Rejected handshake (match not found) matchId=${matchId}`);
       return next(new Error('AUTH_NOT_FOUND: match does not exist'));
     }
 
     const participant = match.players.some((p) => p.userId === dbUser.id);
     if (!participant) {
+      console.warn(
+        `[Socket.IO] Rejected handshake (not a participant) user=${dbUser.id} matchId=${matchId}`,
+      );
       return next(new Error('AUTH_FORBIDDEN: you are not a participant of this match'));
     }
 
