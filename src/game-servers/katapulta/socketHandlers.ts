@@ -157,6 +157,11 @@ export function registerKatapultaHandlers(
     const target = state.players[opp];
     target.health = Math.max(0, target.health - amount);
 
+    console.log(
+      `[katapulta] damage matchId=${matchId} from=${role} to=${opp} amount=${amount} ` +
+        `-> player1.health=${state.players.player1.health} player2.health=${state.players.player2.health}`,
+    );
+
     io.to(room).emit('katapulta:healthUpdate', {
       player1: state.players.player1.health,
       player2: state.players.player2.health,
