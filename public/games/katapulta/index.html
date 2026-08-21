@@ -444,8 +444,18 @@ const Network = {
     });
 
     this.socket.on("katapulta:healthUpdate", ({ player1, player2 }) => {
-      state.players.player1.health = player1;
-      state.players.player2.health = player2;
+      // IMPORTANT: player1/player2 here are the server's ABSOLUTE roles, but
+      // this client always renders itself as "player1" and the opponent as
+      // "player2" regardless of which absolute role the server assigned it
+      // (see applyRemoteState, gameOver, rematchStatus for the same pattern).
+      // Without this mapping, whichever player has the server's "player2"
+      // role sees the two health bars swapped — shots on the opponent
+      // silently update the WRONG local bar, making it look like nothing
+      // happened / like they're not even in the same match.
+      const selfHealth = this.myRole === "player2" ? player2 : player1;
+      const oppHealth = this.myRole === "player2" ? player1 : player2;
+      state.players.player1.health = selfHealth;
+      state.players.player2.health = oppHealth;
       updateHeartsUI();
     });
 
