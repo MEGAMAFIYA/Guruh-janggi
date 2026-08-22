@@ -434,13 +434,24 @@ const Network = {
     });
 
     this.socket.on("katapulta:opponentMove", ({ dir }) => {
-      state.players.player2.remoteMoveDir = dir;
+      // P1_RANGE and P2_RANGE are mirrored halves of the map (left vs
+      // right side). The SAME raw direction means the OPPOSITE real
+      // movement in each half — e.g. "+1" moves a P1-side catapult toward
+      // the center, but would move a P2-side catapult further away from
+      // the center, straight into the far edge, where it gets clamped and
+      // looks frozen. Negate it so the opponent (always rendered locally
+      // in P2_RANGE) visibly mirrors their actual movement correctly.
+      state.players.player2.remoteMoveDir = -dir;
     });
 
     this.socket.on("katapulta:shotFired", ({ role, vx, vy, type }) => {
       if (role === this.myRole) return; // we already fired locally (optimistic)
       const ownerId = "player2"; // opponent is always rendered as player2
-      doShoot({ playerId: ownerId, vx, vy, forcedType: type });
+      // Same left/right mirroring as movement: the shooter's own vx means
+      // "toward their local opponent". Replayed as the opponent's shot on
+      // our screen, horizontal velocity must be flipped so it flies toward
+      // OUR catapult instead of off into the void on the far side.
+      doShoot({ playerId: ownerId, vx: -vx, vy, forcedType: type });
     });
 
     this.socket.on("katapulta:healthUpdate", ({ player1, player2 }) => {
