@@ -103,6 +103,16 @@
     bottom:calc(env(safe-area-inset-bottom,0px) + 140px);
     display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:auto;
   }
+  /* P2 plays on the right side of the (now fixed, absolute) battlefield, so
+     their controls are mirrored for ergonomics: movement moves to the left,
+     shoot moves to the right. P1's controls are untouched (still move=right,
+     shoot=left). Toggled via JS once we know our role (Network.myRole). */
+  #controls.p2-controls .moveGroup{
+    right:auto; left:calc(env(safe-area-inset-left,0px) + 14px);
+  }
+  #controls.p2-controls .shootGroup{
+    left:auto; right:calc(env(safe-area-inset-right,0px) + 130px);
+  }
   .ammoRow{
     position:absolute; top:calc(env(safe-area-inset-top,0px) + 54px);
     left:calc(env(safe-area-inset-left,0px) + 10px);
@@ -408,6 +418,10 @@ const Network = {
       this.myRole = role;
       this.connected = true;
       this.opponentName = opponentName || "Raqib";
+      // P1's controls stay put (move=right, shoot=left); P2's are mirrored
+      // (move=left, shoot=right) since P2 always plays on the right side of
+      // the fixed, absolute battlefield now.
+      document.getElementById("controls").classList.toggle("p2-controls", role === "player2");
       applyRemoteState(s);
       showImHereButton(opponentPresent);
     });
@@ -433,46 +447,33 @@ const Network = {
       if (state.gameStatus !== "playing") beginPlaying();
     });
 
-    this.socket.on("katapulta:opponentMove", ({ dir }) => {
-      // P1_RANGE and P2_RANGE are mirrored halves of the map (left vs
-      // right side). The SAME raw direction means the OPPOSITE real
-      // movement in each half — e.g. "+1" moves a P1-side catapult toward
-      // the center, but would move a P2-side catapult further away from
-      // the center, straight into the far edge, where it gets clamped and
-      // looks frozen. Negate it so the opponent (always rendered locally
-      // in P2_RANGE) visibly mirrors their actual movement correctly.
-      state.players.player2.remoteMoveDir = -dir;
+    this.socket.on("katapulta:opponentMove", ({ role, dir }) => {
+      if (role === this.myRole) return; // shouldn't happen (server excludes sender), but be safe
+      // P1/P2 are now fixed absolute positions shown identically on both
+      // screens, so no left/right mirroring is needed here — the received
+      // direction is applied exactly as-is to whichever slot the sender is.
+      if (state.players[role]) state.players[role].remoteMoveDir = dir;
     });
 
     this.socket.on("katapulta:shotFired", ({ role, vx, vy, type }) => {
       if (role === this.myRole) return; // we already fired locally (optimistic)
-      const ownerId = "player2"; // opponent is always rendered as player2
-      // Same left/right mirroring as movement: the shooter's own vx means
-      // "toward their local opponent". Replayed as the opponent's shot on
-      // our screen, horizontal velocity must be flipped so it flies toward
-      // OUR catapult instead of off into the void on the far side.
-      doShoot({ playerId: ownerId, vx: -vx, vy, forcedType: type });
+      // No mirroring needed either — vx already means the correct absolute
+      // direction since P1/P2 positions (and the drag-to-velocity mapping)
+      // are the same on both screens now.
+      doShoot({ playerId: role, vx, vy, forcedType: type });
     });
 
     this.socket.on("katapulta:healthUpdate", ({ player1, player2 }) => {
-      // IMPORTANT: player1/player2 here are the server's ABSOLUTE roles, but
-      // this client always renders itself as "player1" and the opponent as
-      // "player2" regardless of which absolute role the server assigned it
-      // (see applyRemoteState, gameOver, rematchStatus for the same pattern).
-      // Without this mapping, whichever player has the server's "player2"
-      // role sees the two health bars swapped — shots on the opponent
-      // silently update the WRONG local bar, making it look like nothing
-      // happened / like they're not even in the same match.
-      const selfHealth = this.myRole === "player2" ? player2 : player1;
-      const oppHealth = this.myRole === "player2" ? player1 : player2;
-      state.players.player1.health = selfHealth;
-      state.players.player2.health = oppHealth;
+      // Simple direct assignment — player1/player2 are the same absolute
+      // slots on both server and client now, no self/opponent remapping.
+      state.players.player1.health = player1;
+      state.players.player2.health = player2;
       updateHeartsUI();
     });
 
     this.socket.on("katapulta:gameOver", ({ winner }) => {
       state.gameStatus = "gameover";
-      state.winnerId = winner === this.myRole ? "player1" : "player2";
+      state.winnerId = winner; // already an absolute "player1"/"player2"
       showGameOver();
     });
 
@@ -540,25 +541,11 @@ function setBadgeSub(msg){
 }
 function applyRemoteState(s){
   if (!s) return;
-  const self = Network.myRole === "player2" ? s.player2 : s.player1;
-  const opp = Network.myRole === "player2" ? s.player1 : s.player2;
-  // The server tracks TRUE absolute positions: its "player1" always lives in
-  // the true P1_RANGE (left half of the map), its "player2" always in the
-  // true P2_RANGE (right half). But this client ALWAYS renders itself in
-  // local P1_RANGE (self, left) and the opponent in local P2_RANGE (right),
-  // regardless of which absolute role the server assigned it. For a client
-  // whose true role is "player2", their own true x lives in P2_RANGE — miles
-  // away from local P1_RANGE — so without mirroring it around the map's
-  // center, both catapults snap to the middle of the map on the very next
-  // clamp() and then can't move anywhere (exactly the "stuck near center"
-  // bug). Mirroring (`MAP_WIDTH - x`) maps a true P2_RANGE x onto the
-  // equivalent local P1_RANGE x, and vice versa — only needed when this
-  // client's true role is "player2"; a true "player1" client's frame already
-  // matches the local rendering convention with no transform needed.
-  const mirror = Network.myRole === "player2";
-  const toLocalX = (x) => (mirror ? MAP_WIDTH - x : x);
-  if (self){ state.players.player1.x = toLocalX(self.x); state.players.player1.health = self.health; }
-  if (opp){ state.players.player2.x = toLocalX(opp.x); state.players.player2.health = opp.health; }
+  // Server's player1/player2 are the same fixed absolute slots the client
+  // now uses directly (P1 always left/blue, P2 always right/red on both
+  // screens) — plain assignment, no self/opponent remapping or mirroring.
+  if (s.player1){ state.players.player1.x = s.player1.x; state.players.player1.health = s.player1.health; }
+  if (s.player2){ state.players.player2.x = s.player2.x; state.players.player2.health = s.player2.health; }
   updateHeartsUI();
 }
 
@@ -634,23 +621,31 @@ const state = {
   gameStatus: "connecting", // connecting | solo | playing | gameover
   opponentVisible: false, // becomes true only once BOTH players confirm "Men shu yerdaman"
   winnerId: null,
+  // P1 is ALWAYS the left/blue catapult and P2 is ALWAYS the right/red one,
+  // identically on BOTH players' screens (a fixed, absolute layout) — NOT a
+  // "you're always drawn on the left" per-viewer mirror. Which one you
+  // actually control depends on Network.myRole, so both slots need the
+  // exact same capabilities (ammo, cooldown, remoteMoveDir, etc.) since
+  // either one could be "me" or "the opponent" depending on who's viewing.
   players: {
     player1: {
-      id: "player1", isSelf: true, x: P1_START_X, health: HEART_MAX,
+      id: "player1", x: P1_START_X, health: HEART_MAX,
       ammo: { stone: Infinity, triple: 4, explosive: 2 },
       ammoOrder: ["stone", "triple", "explosive"],
       currentAmmoType: "stone",
       cooldownUntil: 0,
       burning: false,
-      facing: 1 // 1 = faces right
+      facing: 1, // 1 = faces right (P1 is on the left, always faces P2)
+      remoteMoveDir: 0
     },
     player2: {
-      id: "player2", isSelf: false, x: P2_START_X, health: HEART_MAX,
+      id: "player2", x: P2_START_X, health: HEART_MAX,
       ammo: { stone: Infinity, triple: 4, explosive: 2 },
+      ammoOrder: ["stone", "triple", "explosive"],
       currentAmmoType: "stone",
       cooldownUntil: 0,
       burning: false,
-      facing: -1,
+      facing: -1, // -1 = faces left (P2 is on the right, always faces P1)
       remoteMoveDir: 0
     }
   },
@@ -661,6 +656,12 @@ const state = {
   time: 0
 };
 let uid = 1;
+
+// "Which absolute slot am I controlling?" — falls back to "player1" before
+// the server has told us our real role (nothing reads this before then).
+function myId(){ return Network.myRole === "player2" ? "player2" : "player1"; }
+function oppId(){ return myId() === "player1" ? "player2" : "player1"; }
+function rangeFor(id){ return id === "player1" ? P1_RANGE : P2_RANGE; }
 
 /* =====================================================================
    DECORATIONS (cacti) — purely visual, no collision effect on gameplay
@@ -743,7 +744,7 @@ function updateCamera(dt){
     // hold on the spot where the last shot landed for a moment
     target = clamp(camera.holdX - viewW * 0.5 + camera.panOffset, 0, Math.max(0, MAP_WIDTH - viewW));
   } else {
-    let followX = state.players.player1.x - viewW * 0.32;
+    let followX = state.players[myId()].x - viewW * 0.32;
     if(state.projectiles.length){
       const p = state.projectiles[state.projectiles.length-1];
       followX = p.x - viewW * 0.5;
@@ -796,7 +797,7 @@ canvas.addEventListener("touchend", e => { panTouchId = null; }, {passive:true})
 ===================================================================== */
 const ammoIcons = { stone:"🪨", triple:"🎯", explosive:"🔥" };
 function cycleAmmo(){
-  const p = state.players.player1;
+  const p = state.players[myId()];
   const order = p.ammoOrder;
   let idx = order.indexOf(p.currentAmmoType);
   for(let i=1;i<=order.length;i++){
@@ -810,7 +811,7 @@ function cycleAmmo(){
 }
 document.getElementById("ammoBtn").addEventListener("click", cycleAmmo);
 function renderAmmoUI(){
-  const p = state.players.player1;
+  const p = state.players[myId()];
   document.getElementById("ammoEmoji").textContent = ammoIcons[p.currentAmmoType];
   const countEl = document.getElementById("ammoCount");
   const val = p.ammo[p.currentAmmoType];
@@ -825,7 +826,7 @@ const shootBtn = document.getElementById("btnShoot");
 let aiming = false, aimStart = {x:0,y:0}, aimCur = {x:0,y:0}, aimTouchId = null;
 
 function canShoot(){
-  const p = state.players.player1;
+  const p = state.players[myId()];
   if(state.gameStatus !== "playing") return false;
   if(p.burning) return false;
   if(performance.now() < p.cooldownUntil) return false;
@@ -875,8 +876,13 @@ function releaseShot(){
   const dy = aimStart.y - aimCur.y;
   const mag = Math.hypot(dx, dy);
   if(mag < MIN_DRAG) return;
-  const p = state.players.player1;
-  let vx = dx * POWER_SCALE * p.facing;
+  const p = state.players[myId()];
+  // NOTE: no `* p.facing` here. The drag gesture is a universal, screen-
+  // relative "pull back, release toward target" — it must behave the same
+  // way regardless of which absolute side (P1/left or P2/right) you're
+  // actually playing on. `p.facing` is only for the catapult's visual
+  // orientation (crew rotation etc.), not for this velocity's sign.
+  let vx = dx * POWER_SCALE;
   let vy = -Math.abs(dy) * POWER_SCALE; // always launches upward-ish
   const speed = Math.hypot(vx, vy);
   if(speed > MAX_LAUNCH_SPEED){
@@ -886,7 +892,7 @@ function releaseShot(){
   const type = p.currentAmmoType;
   // Optimistic local fire (no round-trip wait), server enforces the real
   // ammo/cooldown rules and relays the same shot to the opponent.
-  doShoot({ playerId: "player1", vx, vy, forcedType: type });
+  doShoot({ playerId: myId(), vx, vy, forcedType: type });
   Network.sendShoot(vx, vy, type);
 }
 
@@ -894,7 +900,7 @@ function doShoot({playerId, vx, vy, forcedType}){
   const p = state.players[playerId];
   if(!p) return;
   const type = forcedType || p.currentAmmoType;
-  if(playerId === "player1" && p.ammo[type] !== Infinity){
+  if(playerId === myId() && p.ammo[type] !== Infinity){
     if(p.ammo[type] <= 0) return;
     p.ammo[type] -= 1;
   }
@@ -910,7 +916,7 @@ function doShoot({playerId, vx, vy, forcedType}){
       r: type==="explosive" ? 9 : 6, spawnT: state.time
     });
   }
-  if(playerId === "player1") p.cooldownUntil = performance.now() + COOLDOWN_MS;
+  if(playerId === myId()) p.cooldownUntil = performance.now() + COOLDOWN_MS;
   p.recoil = 1;
   renderAmmoUI();
 }
@@ -919,12 +925,13 @@ function doShoot({playerId, vx, vy, forcedType}){
    TRAJECTORY PREVIEW (dots) while aiming
 ===================================================================== */
 function getAimVelocity(){
-  const p = state.players.player1;
   const dx = aimStart.x - aimCur.x;
   const dy = aimStart.y - aimCur.y;
   const mag = Math.hypot(dx, dy);
   if(mag < MIN_DRAG) return null;
-  let vx = dx * POWER_SCALE * p.facing;
+  // Same universal, position-independent mapping as releaseShot() — no
+  // `* p.facing` (see note there).
+  let vx = dx * POWER_SCALE;
   let vy = -Math.abs(dy) * POWER_SCALE;
   const speed = Math.hypot(vx, vy);
   if(speed > MAX_LAUNCH_SPEED){ const s = MAX_LAUNCH_SPEED/speed; vx*=s; vy*=s; }
@@ -934,7 +941,7 @@ function getTrajectoryInfo(){
   if(!aiming) return {points:[], landing:null};
   const v = getAimVelocity();
   if(!v) return {points:[], landing:null};
-  const p = state.players.player1;
+  const p = state.players[myId()];
   const pts = [];
   let x = p.x + p.facing*30, y = terrainY(p.x, H) - 46;
   let svx = v.vx, svy = v.vy;
@@ -983,13 +990,13 @@ function updateProjectiles(dt){
         // Explosive splash damage: only the owner's client reports it, and
         // only if the target is actually inside the blast — the server is
         // the source of truth for the resulting health values.
-        if(pr.ownerId === "player1" && dist(pr.x, impactY, target.x, tY) < 90){
+        if(pr.ownerId === myId() && dist(pr.x, impactY, target.x, tY) < 90){
           Network.sendDamage(1);
         }
       } else if(hitTarget){
         spawnImpact(pr.x, pr.y, "#fff");
         // Only the shooter reports damage — see Network.sendDamage doc.
-        if(pr.ownerId === "player1") Network.sendDamage(1);
+        if(pr.ownerId === myId()) Network.sendDamage(1);
       } else {
         spawnImpact(pr.x, pr.y, "#c9a26a");
       }
@@ -1080,8 +1087,8 @@ function heartsHTML(count){
   return out;
 }
 function updateHeartsUI(){
-  document.getElementById("heartsSelf").innerHTML = heartsHTML(state.players.player1.health);
-  document.getElementById("heartsOpp").innerHTML = heartsHTML(state.players.player2.health);
+  document.getElementById("heartsSelf").innerHTML = heartsHTML(state.players[myId()].health);
+  document.getElementById("heartsOpp").innerHTML = heartsHTML(state.players[oppId()].health);
 }
 
 /* =====================================================================
@@ -1090,7 +1097,7 @@ function updateHeartsUI(){
 const cdCanvas = document.getElementById("cdRing");
 const cdCtx = cdCanvas.getContext("2d");
 function drawCooldown(){
-  const p = state.players.player1;
+  const p = state.players[myId()];
   const now = performance.now();
   const remainMs = Math.max(0, p.cooldownUntil - now);
   const frac = remainMs / COOLDOWN_MS;
@@ -1509,11 +1516,22 @@ function render(){
   drawTerrain();
   drawCacti();
   drawFireZones();
-  const p1Dir = state.players.player1.burning ? 0 : moveDir;
-  drawCatapult(state.players.player1, "#2fd6c8", "#178f85", p1Dir);
+  // P1 is always the left/blue catapult, P2 always the right/red one — on
+  // BOTH screens identically. Which one moves via local input (moveDir) vs.
+  // network-relayed dir (remoteMoveDir) depends on which is "me" (myId()).
+  const p1Dir = state.players.player1.burning ? 0 :
+    (myId() === "player1" ? moveDir : state.players.player1.remoteMoveDir);
+  const p2Dir = state.players.player2.burning ? 0 :
+    (myId() === "player2" ? moveDir : state.players.player2.remoteMoveDir);
+  const mine = myId();
+  const other = oppId();
+  const colors = { player1: ["#2fd6c8", "#178f85"], player2: ["#e94b5a", "#a5303c"] };
+  const dirs = { player1: p1Dir, player2: p2Dir };
+  // Always draw ourselves immediately; the OTHER catapult stays hidden
+  // until both players have confirmed "Men shu yerdaman" (opponentVisible).
+  drawCatapult(state.players[mine], ...colors[mine], dirs[mine]);
   if (state.opponentVisible) {
-    const p2Dir = state.players.player2.burning ? 0 : state.players.player2.remoteMoveDir;
-    drawCatapult(state.players.player2, "#e94b5a", "#a5303c", p2Dir);
+    drawCatapult(state.players[other], ...colors[other], dirs[other]);
   }
   drawProjectiles();
   drawParticles();
@@ -1534,16 +1552,25 @@ function loop(now){
   state.time += dt;
 
   if(state.gameStatus === "playing" || state.gameStatus === "solo"){
-    const p1 = state.players.player1;
-    if(!p1.burning){
-      p1.x = clamp(p1.x + moveDir * 52 * dt, P1_RANGE[0], P1_RANGE[1]);
+    // Local input (moveDir) always drives MY OWN absolute slot, whichever
+    // one that is (P1 or P2) — using that slot's own range.
+    const mine = myId();
+    const p = state.players[mine];
+    const range = rangeFor(mine);
+    if(!p.burning){
+      p.x = clamp(p.x + moveDir * 52 * dt, range[0], range[1]);
     }
   }
 
   if(state.gameStatus === "playing"){
-    const p2 = state.players.player2;
-    if(!p2.burning){
-      p2.x = clamp(p2.x + (p2.remoteMoveDir||0) * 52 * dt, P2_RANGE[0], P2_RANGE[1]);
+    // The OTHER slot is driven by whatever direction the opponent last
+    // reported over the network (no mirroring needed — both screens use
+    // the same absolute P1/P2 coordinate frame now).
+    const other = oppId();
+    const op = state.players[other];
+    const oRange = rangeFor(other);
+    if(!op.burning){
+      op.x = clamp(op.x + (op.remoteMoveDir||0) * 52 * dt, oRange[0], oRange[1]);
     }
     if (moveDir !== lastSentMoveDir){
       lastSentMoveDir = moveDir;
@@ -1572,7 +1599,7 @@ document.getElementById("restartBtn").addEventListener("click", () => {
   Network.sendRematchRequest();
 });
 function showGameOver(){
-  const won = state.winnerId === "player1";
+  const won = state.winnerId === myId();
   const overlay = document.getElementById("gameOverOverlay");
   const title = document.getElementById("goTitle");
   const text = document.getElementById("goText");
@@ -1589,12 +1616,14 @@ function resetGameLocal(){
   state.players.player2.health = HEART_MAX;
   state.players.player1.x = P1_START_X;
   state.players.player2.x = P2_START_X;
-  state.players.player1.ammo = { stone: Infinity, triple: 4, explosive: 2 };
-  state.players.player1.currentAmmoType = "stone";
-  state.players.player1.cooldownUntil = 0;
-  state.players.player1.burning = false;
-  state.players.player2.burning = false;
-  state.players.player2.remoteMoveDir = 0;
+  for (const pid of ["player1", "player2"]) {
+    const p = state.players[pid];
+    p.ammo = { stone: Infinity, triple: 4, explosive: 2 };
+    p.currentAmmoType = "stone";
+    p.cooldownUntil = 0;
+    p.burning = false;
+    p.remoteMoveDir = 0;
+  }
   moveDir = 0; lastSentMoveDir = 0;
   state.projectiles = [];
   state.fireZones = [];
