@@ -542,8 +542,23 @@ function applyRemoteState(s){
   if (!s) return;
   const self = Network.myRole === "player2" ? s.player2 : s.player1;
   const opp = Network.myRole === "player2" ? s.player1 : s.player2;
-  if (self){ state.players.player1.x = self.x; state.players.player1.health = self.health; }
-  if (opp){ state.players.player2.x = opp.x; state.players.player2.health = opp.health; }
+  // The server tracks TRUE absolute positions: its "player1" always lives in
+  // the true P1_RANGE (left half of the map), its "player2" always in the
+  // true P2_RANGE (right half). But this client ALWAYS renders itself in
+  // local P1_RANGE (self, left) and the opponent in local P2_RANGE (right),
+  // regardless of which absolute role the server assigned it. For a client
+  // whose true role is "player2", their own true x lives in P2_RANGE — miles
+  // away from local P1_RANGE — so without mirroring it around the map's
+  // center, both catapults snap to the middle of the map on the very next
+  // clamp() and then can't move anywhere (exactly the "stuck near center"
+  // bug). Mirroring (`MAP_WIDTH - x`) maps a true P2_RANGE x onto the
+  // equivalent local P1_RANGE x, and vice versa — only needed when this
+  // client's true role is "player2"; a true "player1" client's frame already
+  // matches the local rendering convention with no transform needed.
+  const mirror = Network.myRole === "player2";
+  const toLocalX = (x) => (mirror ? MAP_WIDTH - x : x);
+  if (self){ state.players.player1.x = toLocalX(self.x); state.players.player1.health = self.health; }
+  if (opp){ state.players.player2.x = toLocalX(opp.x); state.players.player2.health = opp.health; }
   updateHeartsUI();
 }
 
