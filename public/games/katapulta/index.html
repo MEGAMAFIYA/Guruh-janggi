@@ -617,6 +617,13 @@ function beginPlaying(){
   if (oppPanel) oppPanel.style.display = "flex";
   setBadgeSub("Jonli o'yin");
   state.gameStatus = "playing";
+  // The main camera only follows YOUR OWN catapult (the map is much wider
+  // than the screen), so the opponent is normally off-screen and you'd
+  // never actually SEE them move even though their position is correctly
+  // synced under the hood. Keep the mini-map up permanently (previously it
+  // only showed while aiming) so both catapults' positions/movement are
+  // always visible somewhere on screen.
+  showMiniMap();
 }
 
 /* =====================================================================
@@ -861,7 +868,8 @@ window.addEventListener("mouseup", e => { if(aiming) releaseShot(); });
 
 function releaseShot(){
   aiming = false; aimTouchId = null;
-  hideMiniMap();
+  // Mini-map now stays up permanently during gameplay (see beginPlaying) so
+  // both catapults' movement is always trackable, not just while aiming.
   if(!canShoot()) return;
   const dx = aimStart.x - aimCur.x;
   const dy = aimStart.y - aimCur.y;
@@ -1113,7 +1121,6 @@ const MINI_W = miniMapCanvas.width, MINI_H = miniMapCanvas.height;
 function showMiniMap(){ miniMapWrap.classList.add("visible"); }
 function hideMiniMap(){ miniMapWrap.classList.remove("visible"); }
 function drawMiniMap(){
-  if(!aiming) return;
   miniCtx.clearRect(0,0,MINI_W,MINI_H);
   const scaleX = x => (x / MAP_WIDTH) * MINI_W;
 
