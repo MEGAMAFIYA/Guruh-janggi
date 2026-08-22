@@ -101,10 +101,25 @@ export function registerKatapultaHandlers(
   });
 
   // ── Movement ────────────────────────────────────────────────────────────
+  let moveLogCount = 0;
   socket.on('katapulta:move', (payload: { dir: number }) => {
-    if (state.status !== 'playing') return;
+    if (state.status !== 'playing') {
+      // Logged (throttled) so we can tell "client sent it but we're not
+      // in 'playing' yet" apart from "client never sent it at all".
+      if (moveLogCount < 5) {
+        moveLogCount += 1;
+        console.log(
+          `[katapulta] move IGNORED (status=${state.status}) matchId=${matchId} from=${role}`,
+        );
+      }
+      return;
+    }
     const dir = payload?.dir;
     if (dir !== -1 && dir !== 0 && dir !== 1) return;
+    if (moveLogCount < 20) {
+      moveLogCount += 1;
+      console.log(`[katapulta] move matchId=${matchId} from=${role} dir=${dir} -> relaying to opponent`);
+    }
     // Position itself is simulated locally on both clients for smoothness;
     // we just relay the intent so the opponent's client can mirror it, and
     // keep a coarse authoritative copy for players who join mid-match.
