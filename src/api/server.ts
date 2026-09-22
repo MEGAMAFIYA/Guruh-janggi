@@ -153,6 +153,19 @@ export function createServer(bot?: Bot): {
     const webhookPath = `/webhook/${config.bot.webhookSecret}`;
     app.post(
       webhookPath,
+      // Raw pre-grammy visibility: logs that Telegram actually reached us
+      // and what KIND of update it was, before grammy's own routing runs.
+      // If a tap on an inline button ever again produces literally nothing
+      // in the logs, this line is what tells us whether Telegram called us
+      // at all (this fires) or didn't (it doesn't) — collapsing "did
+      // Telegram deliver it?" vs "did our own bot logic silently fail?"
+      // into one obvious log line instead of a guessing game.
+      (req: Request, _res: Response, next: NextFunction) => {
+        const update = req.body ?? {};
+        const kind = Object.keys(update).find((k) => k !== 'update_id') ?? 'unknown';
+        console.log(`[Webhook] Telegram update_id=${update.update_id} kind="${kind}"`);
+        next();
+      },
       webhookCallback(bot, 'express', {
         secretToken: config.bot.webhookSecret,
       }),

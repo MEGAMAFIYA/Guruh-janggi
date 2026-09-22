@@ -35,10 +35,34 @@ async function main(): Promise<void> {
     const webhookPath = `/webhook/${config.bot.webhookSecret}`;
     const fullWebhookUrl = `${config.bot.webhookUrl}${webhookPath}`;
 
+    // IMPORTANT: allowed_updates is explicit here on purpose. Per Telegram's
+    // Bot API, when this parameter is omitted, Telegram keeps using whatever
+    // was set on a PREVIOUS setWebhook call for this bot token — it does
+    // NOT reset to "all types". If this bot's webhook was ever registered
+    // before (by an earlier version of this code, a different tool, or
+    // manually) with a restricted list that excluded 'callback_query',
+    // every inline-button tap would be silently dropped by Telegram itself
+    // — it would never even reach this server, so nothing would show up in
+    // our logs either. Listing every update type we actually handle removes
+    // that ambiguity for good.
     await bot.api.setWebhook(fullWebhookUrl, {
       secret_token: config.bot.webhookSecret,
+      allowed_updates: ['message', 'callback_query', 'my_chat_member'],
     });
-    console.log(`✅ Webhook registered: ${fullWebhookUrl}`);
+
+    const info = await bot.api.getWebhookInfo();
+    console.log(
+      `✅ Webhook registered: ${fullWebhookUrl} ` +
+        `(pending_update_count=${info.pending_update_count}, ` +
+        `allowed_updates=${JSON.stringify(info.allowed_updates ?? 'all')})`,
+    );
+    if (info.last_error_message) {
+      console.warn(
+        `⚠️ Telegram reported a webhook delivery error at ` +
+          `${info.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : '?'}: ` +
+          info.last_error_message,
+      );
+    }
     console.log('✅ Bot ready — updates received via webhook');
   } else {
     // Development: long-polling (no webhook needed, blocks until stopped)
