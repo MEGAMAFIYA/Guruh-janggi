@@ -28,6 +28,13 @@ export interface KatapultaPlayerState {
    * `present` yet; the match only goes live once BOTH players are `present`.
    */
   present: boolean;
+  /**
+   * Anti-cheat credit: incremented when this player's shot is fired
+   * (server-authorized), decremented when they report a hit via
+   * `katapulta:damage`. A damage report with no remaining credit is
+   * rejected — see HITS_PER_SHOT / MAX_PENDING_HITS in constants.ts.
+   */
+  pendingHits: number;
 }
 
 export interface KatapultaMatchState {
@@ -36,6 +43,8 @@ export interface KatapultaMatchState {
   winner: PlayerRole | null;
   players: Record<PlayerRole, KatapultaPlayerState>;
   gcTimer: NodeJS.Timeout | null;
+  rematchTimer: NodeJS.Timeout | null;
+  disconnectTimers: Record<PlayerRole, NodeJS.Timeout | null>;
 }
 
 const matchStates = new Map<string, KatapultaMatchState>();
@@ -59,6 +68,7 @@ function freshPlayer(
     socketId: null,
     rematchReady: false,
     present: false,
+    pendingHits: 0,
   };
 }
 
@@ -85,6 +95,8 @@ export function getOrCreateMatchState(
       player2: freshPlayer(p2.userId, p2.telegramId, p2.firstName, P2_START_X),
     },
     gcTimer: null,
+    rematchTimer: null,
+    disconnectTimers: { player1: null, player2: null },
   };
   matchStates.set(matchId, state);
   return state;
@@ -97,7 +109,14 @@ export function getMatchState(matchId: string): KatapultaMatchState | undefined 
 /** Immediately drops the in-memory state for a match (used when a match is cancelled). */
 export function deleteMatchState(matchId: string): void {
   const state = matchStates.get(matchId);
-  if (state?.gcTimer) clearTimeout(state.gcTimer);
+  if (state) {
+    if (state.gcTimer) clearTimeout(state.gcTimer);
+    if (state.rematchTimer) clearTimeout(state.rematchTimer);
+    for (const role of ['player1', 'player2'] as PlayerRole[]) {
+      const t = state.disconnectTimers[role];
+      if (t) clearTimeout(t);
+    }
+  }
   matchStates.delete(matchId);
 }
 
@@ -120,6 +139,7 @@ export function resetMatchState(state: KatapultaMatchState): void {
     p.currentAmmoType = 'stone';
     p.cooldownUntil = 0;
     p.rematchReady = false;
+    p.pendingHits = 0;
   }
   state.status = 'playing';
   state.winner = null;

@@ -2,7 +2,12 @@ services:
   - type: web
     name: telegram-game-platform
     runtime: node
-    buildCommand: npm install && npm run db:generate && npm run build
+    # --include=dev is required: startCommand runs `db:seed` via ts-node
+    # (a devDependency), and Render sets NODE_ENV=production during the
+    # build too, which would otherwise make a plain `npm install` skip
+    # devDependencies entirely and fail at deploy time with "ts-node: not
+    # found".
+    buildCommand: npm install --include=dev && npm run db:generate && npm run build
     startCommand: npm run db:migrate:prod && npm run db:seed && npm start
     envVars:
       - key: NODE_ENV

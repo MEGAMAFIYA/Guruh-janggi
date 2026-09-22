@@ -1,4 +1,5 @@
 import { CommandContext, Context } from 'grammy';
+import { escapeMarkdownV1 } from '../../utils/telegram';
 
 /**
  * /start — Greets the user and confirms registration.
@@ -9,9 +10,9 @@ export async function handleStart(ctx: CommandContext<Context>): Promise<void> {
   const from = ctx.from;
   if (!from) return;
 
-  const name = from.last_name
-    ? `${from.first_name} ${from.last_name}`
-    : from.first_name;
+  const name = escapeMarkdownV1(
+    from.last_name ? `${from.first_name} ${from.last_name}` : from.first_name,
+  );
 
   await ctx.reply(
     [

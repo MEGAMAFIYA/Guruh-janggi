@@ -1,6 +1,7 @@
 import { CommandContext, Context, InlineKeyboard } from 'grammy';
 import { canManageGames } from '../middleware/adminCheck';
 import { createGame, createGameSchema } from '../../services/gameService';
+import { escapeMarkdownV1 } from '../../utils/telegram';
 
 // ─── Conversation state ───────────────────────────────────────────────────────
 
@@ -169,8 +170,8 @@ async function handleStepUrl(
     return true;
   }
 
-  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
-    await ctx.reply('⚠️ Faqat https:// yoki http:// URL qabul qilinadi.');
+  if (parsedUrl.protocol !== 'https:') {
+    await ctx.reply('⚠️ Faqat https:// URL qabul qilinadi (Telegram Web App boshqasini ochmaydi).');
     return true;
   }
 
@@ -250,6 +251,23 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
 
   const parts = data.split(':');
   const action = parts[1];
+
+  // ── Authorization ──────────────────────────────────────────────────────
+  // Every yangi:* callback embeds the userId who started the wizard. Without
+  // this check, ANY member who can see the group chat could tap these
+  // buttons (they're regular inline buttons, not per-user) and hijack or
+  // corrupt another admin's in-progress /yangi session.
+  const clickerId = ctx.from?.id;
+  // team/min/max: yangi:<action>:<value>:<chatId>:<userId> → userId is parts[4]
+  // confirm/cancel: yangi:<action>:<chatId>:<userId> → userId is parts[3]
+  const embeddedUserId =
+    action === 'team' || action === 'min' || action === 'max'
+      ? parseInt(parts[4], 10)
+      : parseInt(parts[3], 10);
+  if (!clickerId || clickerId !== embeddedUserId) {
+    await ctx.answerCallbackQuery('⛔ Bu sizning sessiyangiz emas.');
+    return;
+  }
 
   if (action === 'team') {
     const isTeam = parts[2] === 'yes';
@@ -347,10 +365,10 @@ export async function handleYangiCallback(ctx: Context, data: string): Promise<v
       await ctx.answerCallbackQuery('✅ O\'yin qo\'shildi!');
       await ctx.editMessageText(
         [
-          `✅ *${game.name}* o'yini muvaffaqiyatli qo'shildi!`,
+          `✅ *${escapeMarkdownV1(game.name)}* o'yini muvaffaqiyatli qo'shildi!`,
           ``,
           `🆔 ID: \`${game.id}\``,
-          `🌐 URL: ${game.webAppUrl}`,
+          `🌐 URL: ${escapeMarkdownV1(game.webAppUrl)}`,
           `👥 Jamoaviy: ${game.isTeamGame ? 'Ha' : 'Yo\'q'}`,
           `🔢 O'yinchilar: ${game.minPlayers}–${game.maxPlayers}`,
         ].join('\n'),
@@ -427,8 +445,8 @@ async function sendConfirmation(
     [
       '*6-qadam:* Ma\'lumotlarni tekshiring:',
       '',
-      `🎮 *O\'yin:* ${state.name}`,
-      `🌐 *URL:* ${state.webAppUrl}`,
+      `🎮 *O\'yin:* ${escapeMarkdownV1(state.name ?? '')}`,
+      `🌐 *URL:* ${escapeMarkdownV1(state.webAppUrl ?? '')}`,
       `👥 *Jamoaviy:* ${state.isTeamGame ? 'Ha' : 'Yo\'q'}`,
       `🔢 *Minimum:* ${state.minPlayers}`,
       `🔢 *Maksimum:* ${state.maxPlayers}`,

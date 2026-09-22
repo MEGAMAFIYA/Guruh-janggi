@@ -35,6 +35,27 @@ export const REMATCH_TIMEOUT_MS = 60_000;
 // players want a rematch, before it's garbage collected.
 export const FINISHED_STATE_TTL_MS = 30 * 60_000;
 
+// If a player disconnects mid-game and doesn't come back within this window,
+// they forfeit and the opponent is declared the winner. Without this, a
+// player who closes the tab mid-match leaves their opponent's client sitting
+// in "playing" state forever, waiting for someone who is never coming back —
+// and the in-memory match state itself is never scheduled for cleanup since
+// nothing ever transitions it to 'finished'.
+export const DISCONNECT_FORFEIT_MS = 45_000;
+
+// Anti-cheat bound: how many outstanding "I hit you" credits a shot can
+// grant its shooter. A single stone/explosive shot can land at most one
+// hit; 'triple' fires several projectiles per shot, so it's allowed a
+// little more credit. This is intentionally generous rather than exact —
+// the goal is only to stop a client from reporting unlimited damage with
+// zero corresponding shots fired, not to simulate physics server-side.
+export const HITS_PER_SHOT: Record<AmmoType, number> = {
+  stone: 1,
+  explosive: 1,
+  triple: 3,
+};
+export const MAX_PENDING_HITS = 6;
+
 export function clamp(v: number, a: number, b: number): number {
   return Math.max(a, Math.min(b, v));
 }

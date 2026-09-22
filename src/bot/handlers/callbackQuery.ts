@@ -1,9 +1,8 @@
 import { Context, InlineKeyboard } from 'grammy';
 import { findGameById } from '../../services/gameService';
 import {
-  createMatch,
   findActiveStartedMatchForUser,
-  findWaitingMatchInChat,
+  findOrCreateWaitingMatch,
   getMatchWithPlayers,
   isUserInMatch,
   joinMatch,
@@ -18,6 +17,7 @@ import {
 } from '../../services/notificationService';
 import { handleYangiCallback } from '../commands/yangi';
 import { isGlobalAdmin, isGroupAdmin } from '../middleware/adminCheck';
+import { escapeMarkdownV1 } from '../../utils/telegram';
 
 /**
  * Central callback query router.
@@ -84,14 +84,15 @@ async function handleGameSelect(ctx: Context, data: string): Promise<void> {
     return;
   }
 
-  // Find existing waiting match or create a new one
-  let match = await findWaitingMatchInChat(BigInt(chatId), gameId);
-  const isNewMatch = !match;
-
-  if (!match) {
-    const created = await createMatch(gameId, BigInt(chatId), game.minPlayers, game.maxPlayers);
-    match = await getMatchWithPlayers(created.id);
-  }
+  // Find existing waiting match or create a new one (atomic — see
+  // findOrCreateWaitingMatch for why this replaced two separate calls).
+  const { match: foundOrCreated, isNew: isNewMatch } = await findOrCreateWaitingMatch(
+    gameId,
+    BigInt(chatId),
+    game.minPlayers,
+    game.maxPlayers,
+  );
+  let match: MatchWithPlayers | null = foundOrCreated;
 
   if (!match) {
     await ctx.reply('❌ Match yaratishda xatolik');
@@ -101,7 +102,11 @@ async function handleGameSelect(ctx: Context, data: string): Promise<void> {
   // Auto-join the selector if not already in match
   const alreadyIn = await isUserInMatch(match.id, dbUser.id);
   if (!alreadyIn) {
-    await safeJoinMatch(match.id, dbUser.id);
+    const result = await safeJoinMatch(match.id, dbUser.id);
+    if (!result.ok) {
+      await ctx.reply(result.error ?? '❌ Qo\'shilishda xatolik');
+      return;
+    }
     match = await getMatchWithPlayers(match.id);
     if (!match) return;
   }
@@ -176,8 +181,8 @@ async function handleMatchJoin(ctx: Context, data: string): Promise<void> {
   }
 
   const joined = await safeJoinMatch(matchId, dbUser.id);
-  if (!joined) {
-    await ctx.answerCallbackQuery('ℹ️ Siz allaqachon bu matchdasiz');
+  if (!joined.ok) {
+    await ctx.answerCallbackQuery(joined.error);
     return;
   }
 
@@ -257,16 +262,27 @@ async function handleMatchStart(ctx: Context, data: string): Promise<void> {
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 /**
- * Joins a match, handling the unique-constraint race condition gracefully.
- * Returns true if the join succeeded, false if the user was already in the match.
+ * Joins a match, handling both the unique-constraint race (user already in
+ * match) and the joinMatch() business-rule errors (match full / not
+ * WAITING) gracefully instead of letting them bubble up as a generic
+ * "❌ Xatolik yuz berdi".
  */
-async function safeJoinMatch(matchId: string, userId: string): Promise<boolean> {
+async function safeJoinMatch(
+  matchId: string,
+  userId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     await joinMatch(matchId, userId);
-    return true;
+    return { ok: true };
   } catch (err: any) {
-    // Prisma unique constraint violation code
-    if (err?.code === 'P2002') return false;
+    // Prisma unique constraint violation — user was already a participant.
+    if (err?.code === 'P2002') return { ok: false, error: 'ℹ️ Siz allaqachon bu matchdasiz' };
+    if (err instanceof Error && err.message === 'Match is full') {
+      return { ok: false, error: '⚠️ Match to\'liq, yangi o\'yinchi sig\'maydi' };
+    }
+    if (err instanceof Error && err.message === 'Match is not accepting players') {
+      return { ok: false, error: '⚠️ Bu match allaqachon boshlangan yoki tugagan' };
+    }
     throw err;
   }
 }
@@ -303,12 +319,12 @@ function buildJoinPanel(match: MatchWithPlayers): string {
       const name = p.user.lastName
         ? `${p.user.firstName} ${p.user.lastName}`
         : p.user.firstName;
-      return `  • ${name}`;
+      return `  • ${escapeMarkdownV1(name)}`;
     })
     .join('\n');
 
   const lines = [
-    `🎮 *${match.game.name}*`,
+    `🎮 *${escapeMarkdownV1(match.game.name)}*`,
     `👥 O'yinchilar: ${match.players.length}/${match.maxPlayers}`,
   ];
   if (playerList) lines.push('', playerList);
@@ -329,7 +345,7 @@ function buildJoinKeyboard(match: MatchWithPlayers): InlineKeyboard {
 
 function buildStartedPanel(match: MatchWithPlayers): string {
   return [
-    `🎮 *${match.game.name}*`,
+    `🎮 *${escapeMarkdownV1(match.game.name)}*`,
     `✅ O'yin boshlandi!`,
     `👥 Ishtirokchilar: ${match.players.length}`,
   ].join('\n');

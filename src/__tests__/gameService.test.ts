@@ -49,8 +49,12 @@ describe('createGameSchema', () => {
     expect(createGameSchema.safeParse({ ...base, minPlayers: 2, maxPlayers: 2 }).success).toBe(true);
   });
 
-  it('accepts http:// URLs', () => {
-    expect(createGameSchema.safeParse({ ...base, webAppUrl: 'http://example.com/game' }).success).toBe(true);
+  it('rejects http:// URLs (Telegram Web Apps require HTTPS)', () => {
+    expect(createGameSchema.safeParse({ ...base, webAppUrl: 'http://example.com/game' }).success).toBe(false);
+  });
+
+  it('accepts https:// URLs', () => {
+    expect(createGameSchema.safeParse({ ...base, webAppUrl: 'https://example.com/game' }).success).toBe(true);
   });
 
   // ── Player count ────────────────────────────────────────────────────────────

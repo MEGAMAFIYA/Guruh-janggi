@@ -15,6 +15,7 @@ import { validateTelegramInitData } from './middleware/validateInitData';
 import { getMatchWithPlayers, MatchWithPlayers } from '../services/matchService';
 import { findUserByTelegramId } from '../services/userService';
 import { registerKatapultaHandlers } from '../game-servers/katapulta/socketHandlers';
+import { registerGeneralsHandlers } from '../game-servers/generals/socketHandlers';
 import { setIoInstance } from '../services/realtimeService';
 
 /**
@@ -65,7 +66,9 @@ export function createServer(bot?: Bot): {
   // If entries DO show up here but nothing after, the problem is inside our
   // handling of that specific request.
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    console.log(`[HTTP] ${req.method} ${req.originalUrl}`);
+    // Mask the webhook secret path segment so it never ends up in logs.
+    const url = req.originalUrl.startsWith('/webhook/') ? '/webhook/***' : req.originalUrl;
+    console.log(`[HTTP] ${req.method} ${url}`);
     next();
   });
 
@@ -101,6 +104,9 @@ export function createServer(bot?: Bot): {
   );
 
   // ── Rate limiting ──────────────────────────────────────────────────────────
+  // Skip /health (uptime pingers) and /webhook/* (Telegram delivers from many
+  // of its own IPs — sharing one 100-req/15min bucket across all of them
+  // would eventually 429 legitimate updates for every user of the bot).
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000, // 15 minutes
@@ -108,6 +114,7 @@ export function createServer(bot?: Bot): {
       message: { ok: false, error: 'Too many requests, please try again later.' },
       standardHeaders: true,
       legacyHeaders: false,
+      skip: (req) => req.path === '/health' || req.path.startsWith('/webhook/'),
     }),
   );
 
@@ -230,6 +237,13 @@ export function createServer(bot?: Bot): {
       return next(new Error('AUTH_NOT_FOUND: match does not exist'));
     }
 
+    if (match.status === 'CANCELLED' || match.status === 'FINISHED') {
+      console.warn(
+        `[Socket.IO] Rejected handshake (match ${match.status}) matchId=${matchId}`,
+      );
+      return next(new Error(`AUTH_ENDED: match is ${match.status.toLowerCase()}`));
+    }
+
     const participant = match.players.some((p) => p.userId === dbUser.id);
     if (!participant) {
       console.warn(
@@ -263,6 +277,9 @@ export function createServer(bot?: Bot): {
     // The matchId is taken from socket.data (server-authoritative),
     // NOT from the client payload, preventing room injection.
     socket.on('game:event', (data: { event: string; payload: unknown }) => {
+      // Guard against malformed/missing payloads — an unhandled TypeError
+      // here would crash this socket's event loop tick.
+      if (!data || typeof data.event !== 'string') return;
       socket.to(`match:${matchId}`).emit('game:event', {
         fromUserId: userId,
         event: data.event,
@@ -275,6 +292,8 @@ export function createServer(bot?: Bot): {
     // module exporting `register<Name>Handlers(io, socket, match)`.
     if (match.game.slug === 'katapulta') {
       registerKatapultaHandlers(io, socket, match);
+    } else if (match.game.slug === 'generals') {
+      registerGeneralsHandlers(io, socket, match);
     }
 
     socket.on('disconnect', () => {

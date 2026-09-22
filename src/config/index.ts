@@ -10,10 +10,19 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   SESSION_SECRET: z.string().min(1, 'SESSION_SECRET is required'),
   WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
-  WEBHOOK_SECRET: z.string().default('webhook_secret'),
+  // No insecure default: if webhook mode is used, a real secret is required
+  // (enforced below) so nobody can POST fake Telegram updates to the guessable
+  // default path.
+  WEBHOOK_SECRET: z.string().default(''),
   ADMIN_TELEGRAM_IDS: z.string().default(''),
   WEBAPP_BASE_URL: z.string().default('https://example.com'),
-});
+}).refine(
+  (data) => !data.WEBHOOK_URL || data.WEBHOOK_SECRET.length >= 16,
+  {
+    message: 'WEBHOOK_SECRET must be set (16+ chars) whenever WEBHOOK_URL is configured',
+    path: ['WEBHOOK_SECRET'],
+  },
+);
 
 const parsed = envSchema.safeParse(process.env);
 

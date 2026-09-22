@@ -3,12 +3,15 @@ import { getYangiSession, clearYangiSession } from './yangi';
 import {
   cancelMatch,
   findActiveMatchForUserInChat,
+  findActiveMatchInChat,
   MatchWithPlayers,
 } from '../../services/matchService';
 import { findUserByTelegramId } from '../../services/userService';
-import { deleteMatchState } from '../../game-servers/katapulta/state';
+import { deleteMatchState as deleteKatapultaMatchState } from '../../game-servers/katapulta/state';
+import { deleteMatchState as deleteGeneralsMatchState } from '../../game-servers/generals/state';
 import { notifyMatchCancelled } from '../../services/realtimeService';
 import { isGlobalAdmin, isGroupAdmin } from '../middleware/adminCheck';
+import { escapeMarkdownV1 } from '../../utils/telegram';
 
 /**
  * /bekor — cancels whatever is currently "in flight" for this user:
@@ -45,27 +48,34 @@ export async function handleBekor(ctx: CommandContext<Context>): Promise<void> {
     return;
   }
 
-  // ── 2) Cancel the user's active match in this chat ─────────────────────
-  const match = await findActiveMatchForUserInChat(BigInt(chatId), dbUser.id);
-  if (!match) {
-    await ctx.reply('ℹ️ Bekor qilinadigan faol o\'yin topilmadi.');
-    return;
-  }
-
-  const isParticipant = match.players.some((p) => p.userId === dbUser.id);
+  // ── 2) Cancel the active match in this chat ─────────────────────────────
+  // Try "a match this user is playing in" first. If that finds nothing but
+  // the caller is an admin, fall back to "any active match in the chat" —
+  // otherwise an admin who isn't personally playing could never use /bekor
+  // to clear a stuck/abandoned match (findActiveMatchForUserInChat would
+  // always come back empty for them, and there was no admin-only fallback
+  // lookup here before).
+  let match = await findActiveMatchForUserInChat(BigInt(chatId), dbUser.id);
   const groupAdmin = await isGroupAdmin(ctx, chatId, userId);
   const globalAdmin = isGlobalAdmin(userId);
 
-  if (!isParticipant && !groupAdmin && !globalAdmin) {
-    await ctx.reply('⛔ Faqat o\'yinchilar yoki adminlar bekor qila oladi');
+  if (!match && (groupAdmin || globalAdmin)) {
+    match = await findActiveMatchInChat(BigInt(chatId));
+  }
+
+  if (!match) {
+    await ctx.reply('ℹ️ Bekor qilinadigan faol o\'yin topilmadi.');
     return;
   }
 
   await cancelMatch(match.id);
 
   // Clean up any live in-memory game state / connected sockets for this match.
+  // Harmless no-op for whichever game slug this match ISN'T (deleting a
+  // matchId that was never in that game's state map does nothing).
   notifyMatchCancelled(match.id);
-  deleteMatchState(match.id);
+  deleteKatapultaMatchState(match.id);
+  deleteGeneralsMatchState(match.id);
 
   // Remove the buttons from the old join panel so nobody can tap a dead match.
   if (match.messageId) {
@@ -80,7 +90,7 @@ export async function handleBekor(ctx: CommandContext<Context>): Promise<void> {
 
   await ctx.reply(
     [
-      `❌ *${match.game.name}* bekor qilindi.`,
+      `❌ *${escapeMarkdownV1(match.game.name)}* bekor qilindi.`,
       '',
       'Yangi o\'yin boshlash uchun /guruh buyrug\'ini yuboring.',
     ].join('\n'),
@@ -89,5 +99,5 @@ export async function handleBekor(ctx: CommandContext<Context>): Promise<void> {
 }
 
 function buildCancelledPanel(match: MatchWithPlayers): string {
-  return [`🎮 *${match.game.name}*`, '❌ Bekor qilindi'].join('\n');
+  return [`🎮 *${escapeMarkdownV1(match.game.name)}*`, '❌ Bekor qilindi'].join('\n');
 }

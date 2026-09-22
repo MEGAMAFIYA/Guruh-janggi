@@ -371,7 +371,7 @@ describe('/yangi conversation flow — non-team game', () => {
     expect(urlCtx.reply.mock.calls[0][1]?.reply_markup).toBeDefined();
   });
 
-  it('step 2: accepts a valid http URL', async () => {
+  it('step 2: rejects a non-https URL (Telegram Web Apps require HTTPS)', async () => {
     const nameCtx = makeCtx({ userId, chatId, chatType: 'private', text: 'Test Game' });
     await handleYangiStep(nameCtx);
 
@@ -383,7 +383,9 @@ describe('/yangi conversation flow — non-team game', () => {
     });
     const consumed = await handleYangiStep(urlCtx);
     expect(consumed).toBe(true);
-    expect(getYangiSession(chatId, userId)?.step).toBe(3);
+    // Still on step 2 — rejected, must re-enter
+    expect(getYangiSession(chatId, userId)?.step).toBe(2);
+    expect(urlCtx.reply.mock.calls[0][0]).toContain('⚠️');
   });
 
   it('step 2: rejects a bare domain without protocol', async () => {

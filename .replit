@@ -1,4 +1,4 @@
-modules = ["nodejs-18"]
+modules = ["nodejs-20"]
 [nix]
 channel = "stable-25_05"
 
@@ -32,6 +32,8 @@ outputType = "console"
 [userenv]
 
 [userenv.shared]
-ADMIN_TELEGRAM_IDS = "5756096918"
+# Set real values via Replit Secrets, not here — this file is committed to
+# git, so anything placed here (e.g. a real admin's Telegram ID) is public.
+ADMIN_TELEGRAM_IDS = ""
 NODE_ENV = "development"
 WEBAPP_BASE_URL = "https://example.com"

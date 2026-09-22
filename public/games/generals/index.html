@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Generals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;600;800&display=swap" rel="stylesheet">
+<script>
+  // See katapulta/index.html for why this is registered first.
+  window.onerror = function (msg, url, line) {
+    try {
+      var el = document.getElementById("tutorialStatus");
+      if (el) el.textContent = "❌ JS xato: " + msg + " (qator " + line + ")";
+      var sp = document.getElementById("waitSpinner");
+      if (sp) sp.style.display = "none";
+    } catch (e) {}
+  };
+</script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root{
+    --bg:#12181f;
+    --panel:#1d2733;
+    --panel-light:#293646;
+    --cream:#eef2f6;
+    --p1:#2fd6c8;
+    --p1-dark:#178f85;
+    --p2:#e94b5a;
+    --p2-dark:#a5303c;
+    --neutral:#3c4a5c;
+    --mountain:#0b0f14;
+    --grid-line:#0e151c;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none;}
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    position:fixed; overflow:hidden; overscroll-behavior:none;
+    background:var(--bg); touch-action:none;
+    font-family:'Rubik',sans-serif; color:var(--cream);
+  }
+  #app{position:absolute; inset:0; overflow:hidden;}
+  canvas#board{position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none;}
+
+  #hud{position:absolute; inset:0; pointer-events:none; z-index:5;}
+  .scoreBar{
+    position:absolute; top:calc(env(safe-area-inset-top,0px) + 8px);
+    left:calc(env(safe-area-inset-left,0px) + 8px);
+    right:calc(env(safe-area-inset-right,0px) + 8px);
+    display:flex; justify-content:space-between; gap:8px;
+  }
+  .scoreChip{
+    background:rgba(20,26,33,.75); border:2px solid var(--panel-light);
+    border-radius:12px; padding:6px 10px; min-width:110px;
+    font-size:12px; font-weight:600; backdrop-filter:blur(2px);
+  }
+  .scoreChip.self{border-color:var(--p1);}
+  .scoreChip.opp{border-color:var(--p2); text-align:right;}
+  .scoreChip .name{font-weight:800; display:block; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .scoreChip .stats{opacity:.85; font-variant-numeric:tabular-nums;}
+  .scoreChip.offline{opacity:.55;}
+
+  .overlay{
+    position:absolute; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:rgba(10,14,18,.92); pointer-events:all;
+  }
+  .overlay.hidden{display:none;}
+  .overlay h1{font-size:26px; margin:0 0 8px;}
+  .overlay p{font-size:14px; opacity:.85; margin:0 0 18px; max-width:320px; line-height:1.5;}
+  .btn{
+    font-family:inherit; font-weight:800; font-size:15px; letter-spacing:.3px;
+    padding:13px 26px; border-radius:14px; border:none; color:#08110d;
+    background:linear-gradient(180deg, var(--p1), var(--p1-dark)); cursor:pointer;
+  }
+  .btn:disabled{opacity:.5;}
+  .btn.secondary{background:var(--panel-light); color:var(--cream);}
+  #spinner{
+    width:34px; height:34px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.2); border-top-color:var(--p1);
+    animation:spin 0.9s linear infinite; margin-bottom:14px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  #goTitle.win{color:var(--p1);}
+  #goTitle.lose{color:var(--p2);}
+  #rematchStatus{font-size:13px; opacity:.8; min-height:18px; margin-top:8px;}
+
+  #helpHint{
+    position:absolute; bottom:calc(env(safe-area-inset-bottom,0px) + 10px);
+    left:0; right:0; text-align:center; font-size:12px; opacity:.65;
+    pointer-events:none; z-index:5;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="board"></canvas>
+
+  <div id="hud">
+    <div class="scoreBar">
+      <div class="scoreChip self" id="chipSelf">
+        <span class="name" id="selfName">Siz</span>
+        <span class="stats" id="selfStats">— hudud · — armiya</span>
+      </div>
+      <div class="scoreChip opp" id="chipOpp">
+        <span class="name" id="oppName">Raqib</span>
+        <span class="stats" id="oppStats">— hudud · — armiya</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="helpHint">Hududingizni bosing, so'ng qo'shni katakka bosib armiya yuboring</div>
+
+  <div class="overlay" id="waitOverlay">
+    <div id="waitSpinner"><div id="spinner"></div></div>
+    <h1>Generals</h1>
+    <p id="tutorialStatus">Ulanmoqda...</p>
+    <button class="btn" id="imHereBtn" style="display:none;">✅ Men shu yerdaman</button>
+    <button class="btn secondary" id="retryBtn" style="display:none; margin-top:10px;" onclick="window.location.reload()">🔁 Qayta urinish</button>
+  </div>
+
+  <div class="overlay hidden" id="gameOverOverlay">
+    <h1 id="goTitle">G'ALABA!</h1>
+    <p id="goText">Siz raqibning bosh qarorgohini egallab, butun hududini bosib oldingiz.</p>
+    <button class="btn" id="restartBtn">🔁 Qayta o'ynash</button>
+    <div id="rematchStatus"></div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   TELEGRAM WEB APP BOOTSTRAP — identical pattern to katapulta/index.html
+===================================================================== */
+const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+if (tg) {
+  tg.ready();
+  tg.expand();
+  try { tg.disableVerticalSwipes(); } catch(e) {}
+}
+function getStartParam(){
+  if (!tg) return null;
+  const sp = tg.initDataUnsafe && tg.initDataUnsafe.start_param;
+  if (sp && sp.startsWith("match_")) return sp.slice(6);
+  const qs = new URLSearchParams(window.location.search);
+  return qs.get("matchId");
+}
+const MATCH_ID = getStartParam();
+const INIT_DATA = tg ? tg.initData : "";
+
+/* =====================================================================
+   BOARD CONSTANTS — MUST stay in sync with
+   src/game-servers/generals/constants.ts (COLS/ROWS)
+===================================================================== */
+const COLS = 9;
+const ROWS = 11;
+
+/* =====================================================================
+   STATE
+===================================================================== */
+const state = {
+  myRole: null,
+  opponentName: "Raqib",
+  cols: COLS,
+  rows: ROWS,
+  tiles: null,          // flat array, length cols*rows, row-major
+  status: "connecting",  // connecting | waiting | playing | gameover
+  selected: null,        // {row,col} or null
+  winner: null,
+  winReason: null,
+};
+
+function tileAt(row, col){
+  if (row < 0 || row >= state.rows || col < 0 || col >= state.cols) return null;
+  return state.tiles ? state.tiles[row * state.cols + col] : null;
+}
+
+/* =====================================================================
+   NETWORK
+===================================================================== */
+const Network = {
+  socket: null,
+  connected: false,
+
+  init(){
+    if (!MATCH_ID) {
+      setStatus("❌ Match topilmadi. Guruhdagi \"🎮 O'ynash\" tugmasi orqali qayta kiring.");
+      return;
+    }
+    if (!INIT_DATA) {
+      setStatus("❌ Telegram orqali ochilmadi. Mini App'ni Telegram ichida oching.");
+      return;
+    }
+
+    setStatus("Serverga ulanmoqda...");
+
+    this.socket = io({
+      auth: { initData: INIT_DATA, matchId: MATCH_ID },
+      transports: ["websocket", "polling"],
+    });
+
+    const connectTimeout = setTimeout(() => {
+      if (!this.connected) {
+        setStatus("❌ Ulanish juda uzoq davom etyapti. Internetni tekshirib, qayta urinib ko'ring.");
+        document.getElementById("retryBtn").style.display = "inline-block";
+      }
+    }, 12000);
+
+    this.socket.on("connect_error", (err) => {
+      clearTimeout(connectTimeout);
+      const detail = err && err.message ? err.message : "noma'lum";
+      setStatus("❌ Ulanishda xatolik: " + detail);
+      document.getElementById("retryBtn").style.display = "inline-block";
+    });
+
+    this.socket.on("generals:error", (msg) => {
+      clearTimeout(connectTimeout);
+      setStatus("❌ " + msg);
+      document.getElementById("retryBtn").style.display = "inline-block";
+    });
+
+    this.socket.on("match:cancelled", () => {
+      this.connected = false;
+      setStatus("❌ Match bekor qilindi. Guruhga qaytib, /guruh orqali qayta boshlashingiz mumkin.");
+      try { this.socket.disconnect(); } catch(e) {}
+    });
+
+    this.socket.on("generals:youAre", ({ role, opponentName, opponentPresent, state: s }) => {
+      clearTimeout(connectTimeout);
+      state.myRole = role;
+      this.connected = true;
+      state.opponentName = opponentName || "Raqib";
+      document.getElementById("oppName").textContent = state.opponentName;
+      document.getElementById("selfName").textContent = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
+        ? (tg.initDataUnsafe.user.first_name || "Siz") : "Siz";
+      applyServerState(s);
+      showImHereButton(opponentPresent);
+    });
+
+    this.socket.on("generals:opponentHere", () => {
+      if (state.status === "waiting") {
+        setStatus("✅ Raqib (" + state.opponentName + ") keldi! Endi siz ham \"Men shu yerdaman\" tugmasini bosing.");
+      }
+    });
+
+    this.socket.on("generals:bothReady", ({ state: s }) => {
+      applyServerState(s);
+      beginPlaying();
+    });
+
+    this.socket.on("generals:stateSync", ({ state: s }) => {
+      applyServerState(s);
+      if (state.status !== "playing" && s.status === "playing") beginPlaying();
+    });
+
+    this.socket.on("generals:boardUpdate", ({ board }) => {
+      applyBoard(board);
+      updateScoreChips();
+      drawBoard();
+    });
+
+    this.socket.on("generals:opponentDisconnected", () => {
+      setChipOffline("opp", true);
+    });
+    this.socket.on("generals:opponentReconnected", () => {
+      setChipOffline("opp", false);
+    });
+
+    this.socket.on("generals:gameOver", ({ winner, reason }) => {
+      state.status = "gameover";
+      state.winner = winner;
+      state.winReason = reason;
+      showGameOver();
+    });
+
+    this.socket.on("generals:rematchStatus", ({ player1, player2 }) => {
+      const selfReady = state.myRole === "player1" ? player1 : player2;
+      const oppReady = state.myRole === "player1" ? player2 : player1;
+      const el = document.getElementById("rematchStatus");
+      if (selfReady && !oppReady) el.textContent = "⏳ Raqibni kutyapmiz...";
+      else if (!selfReady && oppReady) el.textContent = "Raqib tayyor — siz ham bosing!";
+      else el.textContent = "";
+    });
+
+    this.socket.on("generals:rematchStart", ({ state: s }) => {
+      applyServerState(s);
+      document.getElementById("gameOverOverlay").classList.add("hidden");
+      document.getElementById("restartBtn").disabled = false;
+      document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
+      document.getElementById("rematchStatus").textContent = "";
+      state.selected = null;
+      beginPlaying();
+    });
+
+    this.socket.on("generals:rematchTimeout", () => {
+      const btn = document.getElementById("restartBtn");
+      btn.disabled = false;
+      btn.textContent = "🔁 Qayta o'ynash";
+      document.getElementById("rematchStatus").textContent = "Raqib javob bermadi. Qayta urinib ko'ring.";
+    });
+  },
+
+  imHere(){
+    if (this.socket && this.connected) this.socket.emit("generals:imHere");
+  },
+  sendMove(from, to){
+    if (this.socket && this.connected) {
+      this.socket.emit("generals:move", { fromRow: from.row, fromCol: from.col, toRow: to.row, toCol: to.col });
+    }
+  },
+  sendRematchRequest(){
+    if (this.socket && this.connected) this.socket.emit("generals:rematchRequest");
+  },
+};
+
+function applyServerState(s){
+  state.status = s.status === "playing" ? "playing" : "waiting";
+  applyBoard(s.board);
+  setChipOffline("opp", state.myRole === "player1" ? !s.player2.connected : !s.player1.connected);
+  updateScoreChips();
+  drawBoard();
+}
+function applyBoard(board){
+  state.cols = board.cols;
+  state.rows = board.rows;
+  state.tiles = board.tiles;
+}
+
+/* =====================================================================
+   UI HELPERS
+===================================================================== */
+function setStatus(text){
+  document.getElementById("tutorialStatus").textContent = text;
+}
+function setChipOffline(which, offline){
+  document.getElementById(which === "self" ? "chipSelf" : "chipOpp").classList.toggle("offline", !!offline);
+}
+function showImHereButton(opponentPresent){
+  document.getElementById("waitSpinner").style.display = "none";
+  const btn = document.getElementById("imHereBtn");
+  btn.style.display = "inline-block";
+  setStatus(opponentPresent
+    ? "✅ Raqib (" + state.opponentName + ") allaqachon shu yerda! Boshlash uchun bosing."
+    : "Boshlashga tayyor bo'lsangiz, tugmani bosing.");
+  btn.onclick = () => {
+    btn.disabled = true;
+    btn.textContent = "⏳ Kutilmoqda...";
+    setStatus("Raqibni kutyapmiz...");
+    Network.imHere();
+  };
+}
+function beginPlaying(){
+  document.getElementById("waitOverlay").classList.add("hidden");
+  state.status = "playing";
+  resizeCanvas();
+  drawBoard();
+}
+function roleLabel(role){ return role === state.myRole ? "self" : "opp"; }
+
+function scoreOf(role){
+  let tiles = 0, army = 0;
+  if (state.tiles) {
+    for (const t of state.tiles) {
+      if (t.owner === role) { tiles += 1; army += t.army; }
+    }
+  }
+  return { tiles, army };
+}
+function updateScoreChips(){
+  if (!state.myRole) return;
+  const opp = state.myRole === "player1" ? "player2" : "player1";
+  const self = scoreOf(state.myRole);
+  const other = scoreOf(opp);
+  document.getElementById("selfStats").textContent = self.tiles + " hudud · " + self.army + " armiya";
+  document.getElementById("oppStats").textContent = other.tiles + " hudud · " + other.army + " armiya";
+}
+
+function showGameOver(){
+  const won = state.winner === state.myRole;
+  const overlay = document.getElementById("gameOverOverlay");
+  const title = document.getElementById("goTitle");
+  const text = document.getElementById("goText");
+  title.textContent = won ? "G'ALABA!" : (state.winner ? "MAG'LUBIYAT" : "DURAG'");
+  title.className = won ? "win" : (state.winner ? "lose" : "");
+  if (state.winReason === "forfeit") {
+    text.textContent = won ? "Raqib chiqib ketdi — siz g'olibsiz." : "Siz uzilib qoldingiz, raqib g'olib deb belgilandi.";
+  } else if (state.winReason === "timeout") {
+    text.textContent = won
+      ? "Vaqt tugadi — ko'proq hudud/armiya bilan siz g'olib bo'ldingiz."
+      : "Vaqt tugadi — raqib ko'proq hudud/armiyaga ega bo'lib g'olib chiqdi.";
+  } else {
+    text.textContent = won
+      ? "Siz raqibning bosh qarorgohini egallab, butun hududini bosib oldingiz."
+      : "Raqib sizning bosh qarorgohingizni egallab, butun hududingizni bosib oldi.";
+  }
+  document.getElementById("restartBtn").disabled = false;
+  document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
+  document.getElementById("rematchStatus").textContent = "";
+  overlay.classList.remove("hidden");
+}
+document.getElementById("restartBtn").addEventListener("click", () => {
+  const btn = document.getElementById("restartBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Yuborildi...";
+  document.getElementById("rematchStatus").textContent = "⏳ Raqibni kutyapmiz...";
+  Network.sendRematchRequest();
+});
+
+/* =====================================================================
+   CANVAS RENDERING
+===================================================================== */
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+let layout = { tile: 30, offX: 0, offY: 0 };
+
+function resizeCanvas(){
+  const rect = document.getElementById("app").getBoundingClientRect();
+  dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  canvas.style.width = rect.width + "px";
+  canvas.style.height = rect.height + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const padTop = 70, padBottom = 40, padSide = 10;
+  const availW = rect.width - padSide * 2;
+  const availH = rect.height - padTop - padBottom;
+  const tile = Math.max(14, Math.floor(Math.min(availW / state.cols, availH / state.rows)));
+  layout.tile = tile;
+  layout.offX = padSide + (availW - tile * state.cols) / 2;
+  layout.offY = padTop + (availH - tile * state.rows) / 2;
+
+  drawBoard();
+}
+window.addEventListener("resize", resizeCanvas);
+
+const PALETTE = {
+  p1: "#2fd6c8", p1dark: "#178f85",
+  p2: "#e94b5a", p2dark: "#a5303c",
+  neutral: "#3c4a5c", neutralLine: "#4a5b6f",
+  mountain: "#0b0f14", mountainLine: "#1a2229",
+  grid: "#0e151c",
+};
+
+function drawBoard(){
+  if (!state.tiles) return;
+  const rect = document.getElementById("app").getBoundingClientRect();
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const { tile, offX, offY } = layout;
+
+  for (let row = 0; row < state.rows; row++) {
+    for (let col = 0; col < state.cols; col++) {
+      const t = tileAt(row, col);
+      if (!t) continue;
+      const x = offX + col * tile;
+      const y = offY + row * tile;
+
+      let fill = PALETTE.neutral;
+      if (t.type === "mountain") fill = PALETTE.mountain;
+      else if (t.owner === "player1") fill = PALETTE.p1dark;
+      else if (t.owner === "player2") fill = PALETTE.p2dark;
+
+      ctx.fillStyle = fill;
+      ctx.fillRect(x, y, tile - 1, tile - 1);
+
+      if (state.selected && state.selected.row === row && state.selected.col === col) {
+        ctx.strokeStyle = "#ffe27a";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x + 1.5, y + 1.5, tile - 4, tile - 4);
+      }
+
+      if (t.type === "city" || t.type === "general") {
+        ctx.font = Math.floor(tile * 0.5) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(t.type === "general" ? "👑" : "🏰", x + tile / 2, y + tile * 0.38);
+      }
+
+      if (t.type !== "mountain" && (t.army > 0)) {
+        ctx.fillStyle = "#f4f7fa";
+        ctx.font = "700 " + Math.max(9, Math.floor(tile * 0.32)) + "px Rubik, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(t.army), x + tile / 2, y + tile * 0.74);
+      }
+    }
+  }
+}
+
+/* =====================================================================
+   INPUT — tap-to-select, tap-adjacent-to-move
+===================================================================== */
+function pickTile(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left - layout.offX;
+  const y = clientY - rect.top - layout.offY;
+  const col = Math.floor(x / layout.tile);
+  const row = Math.floor(y / layout.tile);
+  if (row < 0 || row >= state.rows || col < 0 || col >= state.cols) return null;
+  return { row, col };
+}
+function isAdjacent(a, b){
+  const dr = Math.abs(a.row - b.row), dc = Math.abs(a.col - b.col);
+  return (dr === 1 && dc === 0) || (dr === 0 && dc === 1);
+}
+function handleTap(clientX, clientY){
+  if (state.status !== "playing" || !state.myRole) return;
+  const pos = pickTile(clientX, clientY);
+  if (!pos) return;
+  const t = tileAt(pos.row, pos.col);
+  if (!t) return;
+
+  if (state.selected && isAdjacent(state.selected, pos)) {
+    Network.sendMove(state.selected, pos);
+    // Optimistic deselect — the authoritative boardUpdate will correct
+    // anything if the move was actually invalid (e.g. army <= 1 by then).
+    state.selected = null;
+    drawBoard();
+    return;
+  }
+
+  if (t.owner === state.myRole && t.army > 1) {
+    state.selected = pos;
+  } else {
+    state.selected = null;
+  }
+  drawBoard();
+}
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  const touch = e.changedTouches[0];
+  if (touch) handleTap(touch.clientX, touch.clientY);
+}, { passive: false });
+canvas.addEventListener("click", (e) => {
+  handleTap(e.clientX, e.clientY);
+});
+
+/* =====================================================================
+   BOOT
+===================================================================== */
+resizeCanvas();
+Network.init();
+</script>
+</body>
+</html>

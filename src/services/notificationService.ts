@@ -1,6 +1,7 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { MatchWithPlayers } from './matchService';
 import { getTeamLabel } from '../matchmaking/teamAssigner';
+import { escapeMarkdownV1 } from '../utils/telegram';
 
 let botInstance: Bot | null = null;
 let cachedBotUsername: string | null = null;
@@ -46,15 +47,23 @@ export async function notifyPlayersMatchStarted(match: MatchWithPlayers): Promis
       await bot.api.sendMessage(
         Number(player.user.telegramId),
         [
-          `🎮 *${match.game.name}* o'yini boshlandi!`,
+          `🎮 *${escapeMarkdownV1(match.game.name)}* o'yini boshlandi!`,
           teamLabel,
           '',
           'Quyidagi tugmani bosib o\'yinga kiring:',
         ].join('\n'),
         { parse_mode: 'Markdown', reply_markup: kb },
       );
-    } catch {
-      // Player may not have started the bot — silently ignore
+    } catch (err) {
+      // Player may not have started the bot yet — this is expected and
+      // common, so it's not logged as an error. It's still logged (not
+      // silently swallowed) so a *systemic* delivery failure (e.g. bad
+      // token, Telegram outage) is visible in the logs instead of just
+      // looking like "some players never got their invite".
+      console.warn(
+        `[notify] Failed to DM player tgId=${player.user.telegramId}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 }
@@ -76,7 +85,7 @@ export async function notifyGroupMatchStarted(
         ? `${p.user.firstName} ${p.user.lastName}`
         : p.user.firstName;
       const team = match.game.isTeamGame ? ` ${getTeamLabel(p.team)}` : '';
-      return `${i + 1}. ${name}${team}`;
+      return `${i + 1}. ${escapeMarkdownV1(name)}${team}`;
     })
     .join('\n');
 
@@ -85,7 +94,7 @@ export async function notifyGroupMatchStarted(
   await bot.api.sendMessage(
     Number(chatId),
     [
-      `🚀 *${match.game.name}* o'yini boshlandi!`,
+      `🚀 *${escapeMarkdownV1(match.game.name)}* o'yini boshlandi!`,
       '',
       '👥 Ishtirokchilar:',
       playerList,

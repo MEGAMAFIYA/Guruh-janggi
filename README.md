@@ -63,7 +63,17 @@ npm run db:migrate
 
 > Migration nomi so'ralganda: `init` deb kiriting.
 
-### 6. Ishga tushiring (development)
+### 6. Built-in o'yinlarni (Katapulta, Generals) DB'ga yozing
+
+```bash
+npm run db:seed
+```
+
+> Bu qadamsiz `/guruh` buyrug'i "faol o'yin yo'q" deb javob beradi — o'yinlar
+> DB'da mavjud bo'lishi kerak. `render.yaml`dagi production `startCommand`
+> buni har deploy'da avtomatik bajaradi.
+
+### 7. Ishga tushiring (development)
 
 ```bash
 npm run dev
@@ -159,7 +169,7 @@ Telegram ID'ingizni [@userinfobot](https://t.me/userinfobot) orqali bilishingiz 
 | `BOT_TOKEN` | @BotFather dan olingan bot token | `123456:ABCdef...` |
 | `ADMIN_TELEGRAM_IDS` | Global adminlarning Telegram ID'lari (vergul bilan) | `123456789` |
 | `WEBHOOK_URL` | Render servisingizning HTTPS manzili | `https://your-app.onrender.com` |
-| `WEBAPP_BASE_URL` | Mini App'lar joylashgan domen (CORS uchun) | `https://your-miniapp.example.com` |
+| `WEBAPP_BASE_URL` | Har bir o'yinning Mini App URL'i shu bazadan quriladi (`db:seed` ishlatadi: `<BASE>/games/<slug>/index.html`) | `https://your-app.onrender.com` |
 
 > **`WEBHOOK_URL` qanday topiladi:**
 > 1. Birinchi deploy'dan keyin Render Dashboard'dagi servis sahifasiga kiring.
@@ -297,19 +307,29 @@ GET /health               — Server holati
 
 ## Socket.IO Events
 
+Ulanish faqat autentifikatsiya bilan: har bir mini app Telegram `initData`
+va `matchId`ni handshake orqali yuboradi, server ularni tekshirib, socket'ni
+`match:<matchId>` xonasiga qo'shadi.
+
 ```js
-// Matchga qo'shilish
-socket.emit('join:match', matchId);
-
-// Matchdan chiqish
-socket.emit('leave:match', matchId);
-
-// O'yin eventi yuborish
-socket.emit('game:event', { matchId, event: 'move', payload: { x: 1, y: 2 } });
-
-// O'yin eventini qabul qilish
-socket.on('game:event', ({ from, event, payload }) => { ... });
+const socket = io(SERVER_URL, {
+  auth: { initData: Telegram.WebApp.initData, matchId: MATCH_ID },
+});
 ```
+
+Umumiy (har qanday o'yin uchun) event — boshqa o'yin qo'shilganda serverga
+yozilmagan mantiq uchun xom relay sifatida ishlatiladi:
+
+```js
+socket.emit('game:event', { event: 'move', payload: { x: 1, y: 2 } });
+socket.on('game:event', ({ fromUserId, event, payload }) => { ... });
+```
+
+Har bir o'rnatilgan o'yin o'zining `<slug>:*` event to'plamiga ega (masalan
+`katapulta:shoot` / `katapulta:damage` / `katapulta:gameOver`, yoki
+`generals:move` / `generals:boardUpdate` / `generals:gameOver`) — bular
+`src/game-servers/<slug>/socketHandlers.ts` faylida joylashgan bo'lib, mos
+mini app (`public/games/<slug>/index.html`) bilan sinxron ishlaydi.
 
 ---
 
@@ -320,7 +340,7 @@ socket.on('game:event', ({ from, event, payload }) => { ... });
 | `/start` | Botni ishga tushirish, ro'yxatdan o'tish | Har kim |
 | `/guruh` | Faol o'yinlar ro'yxati | Guruh a'zolari |
 | `/yangi` | Yangi o'yin qo'shish (multi-step) | Adminlar |
-| `/bekor` | Joriy dialog'ni bekor qilish | Admin (dialog ichida) |
+| `/bekor` | Faol (kutilayotgan yoki boshlangan) o'yinni bekor qilish | O'yinchi yoki admin |
 
 ---
 
@@ -341,7 +361,8 @@ telegram-game-platform/
 │   │   ├── commands/
 │   │   │   ├── start.ts              # /start
 │   │   │   ├── guruh.ts              # /guruh
-│   │   │   └── yangi.ts              # /yangi (multi-step)
+│   │   │   ├── yangi.ts              # /yangi (multi-step)
+│   │   │   └── bekor.ts              # /bekor
 │   │   ├── handlers/
 │   │   │   └── callbackQuery.ts      # Inline keyboard handler
 │   │   ├── middleware/
@@ -352,6 +373,9 @@ telegram-game-platform/
 │   │   └── index.ts                  # Env validation (Zod)
 │   ├── database/
 │   │   └── prisma.ts
+│   ├── game-servers/                 # One folder per built-in game's server logic
+│   │   ├── katapulta/                # Client-simulated physics, server relays + anti-cheat
+│   │   └── generals/                 # Fully server-authoritative grid strategy game
 │   ├── matchmaking/
 │   │   └── teamAssigner.ts
 │   ├── services/
@@ -363,6 +387,10 @@ telegram-game-platform/
 │   │   ├── telegram.ts
 │   │   └── validation.ts
 │   └── index.ts                      # Entry point
+├── public/
+│   └── games/
+│       ├── katapulta/index.html      # Katapulta mini app (self-contained)
+│       └── generals/index.html       # Generals mini app (self-contained)
 ├── prisma/
 │   └── schema.prisma
 ├── .env.example

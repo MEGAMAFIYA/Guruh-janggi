@@ -11,13 +11,17 @@ export const createGameSchema = z
       .refine(
         (url) => {
           try {
-            const parsed = new URL(url);
-            return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+            // Telegram Web Apps (and browsers in general) refuse to open a
+            // non-HTTPS webAppUrl inside the in-app WebView — an http://
+            // URL here used to be silently accepted at creation time and
+            // only fail (with no visible error) when a player actually
+            // tried to open the game.
+            return new URL(url).protocol === 'https:';
           } catch {
             return false;
           }
         },
-        { message: 'URL https:// yoki http:// bilan boshlanishi kerak' },
+        { message: 'URL https:// bilan boshlanishi kerak (Telegram Web App faqat HTTPS qabul qiladi)' },
       ),
     isTeamGame: z.boolean(),
     minPlayers: z.number().int().min(2).max(6),

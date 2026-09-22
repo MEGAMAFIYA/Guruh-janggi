@@ -3,6 +3,9 @@ import { MatchWithPlayers, finishMatch } from '../../services/matchService';
 import {
   AmmoType,
   COOLDOWN_MS,
+  DISCONNECT_FORFEIT_MS,
+  HITS_PER_SHOT,
+  MAX_PENDING_HITS,
   P1_RANGE,
   P2_RANGE,
   REMATCH_TIMEOUT_MS,
@@ -20,7 +23,28 @@ import {
   serializePublicState,
 } from './state';
 
-const rematchTimers = new Map<string, NodeJS.Timeout>();
+/**
+ * Ends the match for anti-cheat / disconnect-forfeit / normal-KO reasons
+ * alike, so all three paths stay in sync (status transition, DB write,
+ * cleanup scheduling, client notification).
+ */
+function endGame(
+  io: SocketIOServer,
+  room: string,
+  matchId: string,
+  state: KatapultaMatchState,
+  winner: PlayerRole,
+  reason: 'ko' | 'forfeit',
+): void {
+  if (state.status !== 'playing') return;
+  state.status = 'finished';
+  state.winner = winner;
+  io.to(room).emit('katapulta:gameOver', { winner, reason });
+  finishMatch(matchId).catch((err) => {
+    console.error('[katapulta] finishMatch failed:', err);
+  });
+  scheduleCleanup(matchId);
+}
 
 /**
  * Wires up all `katapulta:*` events for one authenticated socket connection.
@@ -60,6 +84,14 @@ export function registerKatapultaHandlers(
   me.connected = true;
   me.socketId = socket.id;
 
+  // A (re)connect cancels any pending forfeit-by-disconnect for this
+  // player — they came back in time.
+  const pendingForfeit = state.disconnectTimers[role];
+  if (pendingForfeit) {
+    clearTimeout(pendingForfeit);
+    state.disconnectTimers[role] = null;
+  }
+
   const opp = opponentRole(role);
   const oppState = state.players[opp];
 
@@ -76,6 +108,7 @@ export function registerKatapultaHandlers(
   // Reconnect mid-game: bring this client straight back into the live match.
   if (state.status === 'playing') {
     socket.emit('katapulta:stateSync', { state: serializePublicState(state) });
+    io.to(room).emit('katapulta:opponentReconnected', { role });
   }
 
   // ── Explicit "Men shu yerdaman" confirmation ──────────────────────────
@@ -151,6 +184,11 @@ export function registerKatapultaHandlers(
       me.currentAmmoType = type;
       me.cooldownUntil = now + COOLDOWN_MS;
 
+      // Anti-cheat: grant this shot's hit credit so a later katapulta:damage
+      // report from this same player is accepted. Capped so a long run of
+      // unanswered shots can't bank unlimited future "damage" reports.
+      me.pendingHits = Math.min(MAX_PENDING_HITS, me.pendingHits + HITS_PER_SHOT[type]);
+
       io.to(room).emit('katapulta:shotFired', {
         role,
         vx: payload.vx,
@@ -162,12 +200,22 @@ export function registerKatapultaHandlers(
 
   // ── Damage reporting ───────────────────────────────────────────────────
   // Only the client that OWNS a projectile reports a hit — the frontend is
-  // responsible for only calling this when `pr.ownerId === self`. This is a
-  // trust-the-client compromise (full server-side physics is out of scope
-  // for this in-memory relay), but it avoids double-counted damage from
-  // both clients independently simulating the same projectile.
+  // responsible for only calling this when `pr.ownerId === self`. This is
+  // still a trust-the-client compromise (full server-side physics is out of
+  // scope for this in-memory relay), but a report is now only honored if it
+  // corresponds to a shot this player actually fired (me.pendingHits),
+  // rate-limited by the shot cooldown itself — a modified client can no
+  // longer report unlimited damage with zero shots fired.
   socket.on('katapulta:damage', (payload: { amount: number }) => {
     if (state.status !== 'playing') return;
+    if (me.pendingHits <= 0) {
+      console.warn(
+        `[katapulta] damage REJECTED (no pending hit credit) matchId=${matchId} from=${role}`,
+      );
+      return;
+    }
+    me.pendingHits -= 1;
+
     const amount = Math.max(1, Math.min(5, Math.floor(Number(payload?.amount) || 1)));
     const target = state.players[opp];
     target.health = Math.max(0, target.health - amount);
@@ -182,14 +230,8 @@ export function registerKatapultaHandlers(
       player2: state.players.player2.health,
     });
 
-    if (target.health <= 0 && state.status === 'playing') {
-      state.status = 'finished';
-      state.winner = role;
-      io.to(room).emit('katapulta:gameOver', { winner: role });
-      finishMatch(matchId).catch((err) => {
-        console.error('[katapulta] finishMatch failed:', err);
-      });
-      scheduleCleanup(matchId);
+    if (target.health <= 0) {
+      endGame(io, room, matchId, state, role, 'ko');
     }
   });
 
@@ -204,21 +246,20 @@ export function registerKatapultaHandlers(
     });
 
     const bothReady = state.players.player1.rematchReady && state.players.player2.rematchReady;
-    const existingTimer = rematchTimers.get(matchId);
 
     if (bothReady) {
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        rematchTimers.delete(matchId);
+      if (state.rematchTimer) {
+        clearTimeout(state.rematchTimer);
+        state.rematchTimer = null;
       }
       resetMatchState(state);
       io.to(room).emit('katapulta:rematchStart', { state: serializePublicState(state) });
       return;
     }
 
-    if (!existingTimer) {
-      const timer = setTimeout(() => {
-        rematchTimers.delete(matchId);
+    if (!state.rematchTimer) {
+      state.rematchTimer = setTimeout(() => {
+        state.rematchTimer = null;
         if (state.status !== 'finished') return;
         const stillWaiting = !(
           state.players.player1.rematchReady && state.players.player2.rematchReady
@@ -229,17 +270,32 @@ export function registerKatapultaHandlers(
           io.to(room).emit('katapulta:rematchTimeout');
         }
       }, REMATCH_TIMEOUT_MS);
-      rematchTimers.set(matchId, timer);
     }
   });
 
   // ── Disconnect ──────────────────────────────────────────────────────────
   socket.on('disconnect', () => {
+    // Ignore a disconnect event from a stale/replaced socket (e.g. the
+    // player opened a second tab — the old socket's 'disconnect' firing
+    // shouldn't mark the player offline if a newer socket already took over).
+    if (me.socketId !== socket.id) return;
+
     me.connected = false;
     me.socketId = null;
     io.to(room).emit('katapulta:opponentDisconnected', { role });
+
     if (state.status === 'finished') {
       scheduleCleanup(matchId);
+      return;
+    }
+
+    if (state.status === 'playing' && !state.disconnectTimers[role]) {
+      state.disconnectTimers[role] = setTimeout(() => {
+        state.disconnectTimers[role] = null;
+        if (state.status === 'playing' && !me.connected) {
+          endGame(io, room, matchId, state, opp, 'forfeit');
+        }
+      }, DISCONNECT_FORFEIT_MS);
     }
   });
 }

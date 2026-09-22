@@ -471,9 +471,10 @@ const Network = {
       updateHeartsUI();
     });
 
-    this.socket.on("katapulta:gameOver", ({ winner }) => {
+    this.socket.on("katapulta:gameOver", ({ winner, reason }) => {
       state.gameStatus = "gameover";
       state.winnerId = winner; // already an absolute "player1"/"player2"
+      state.gameOverReason = reason || "ko";
       showGameOver();
     });
 
@@ -1605,7 +1606,11 @@ function showGameOver(){
   const text = document.getElementById("goText");
   title.textContent = won ? "G'ALABA!" : "MAG'LUBIYAT";
   title.className = won ? "win" : "lose";
-  text.textContent = won ? "Siz raqibni mag'lub etdingiz." : "Raqib sizni mag'lub etdi.";
+  if (state.gameOverReason === "forfeit") {
+    text.textContent = won ? "Raqib chiqib ketdi — siz g'olibsiz." : "Siz uzilib qoldingiz, raqib g'olib deb belgilandi.";
+  } else {
+    text.textContent = won ? "Siz raqibni mag'lub etdingiz." : "Raqib sizni mag'lub etdi.";
+  }
   document.getElementById("restartBtn").disabled = false;
   document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
   document.getElementById("rematchStatus").style.display = "none";

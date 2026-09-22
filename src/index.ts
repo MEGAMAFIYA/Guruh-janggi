@@ -53,11 +53,18 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
 
-    if (config.bot.webhookUrl && config.server.isProduction) {
-      await bot.api.deleteWebhook().catch(() => {});
-    } else {
+    if (!(config.bot.webhookUrl && config.server.isProduction)) {
+      // Long-polling mode: stop cleanly so Telegram doesn't see a dangling
+      // getUpdates connection.
       await bot.stop();
     }
+    // NOTE: in webhook mode we deliberately do NOT call bot.api.deleteWebhook()
+    // here. On Render, SIGTERM fires on every deploy/restart — deleting the
+    // webhook on shutdown races with the NEW instance registering it moments
+    // later during startup, and can leave the bot with no webhook at all if
+    // the old instance's deleteWebhook call lands after the new instance's
+    // setWebhook call. The webhook registration is idempotent and re-runs on
+    // every startup anyway, so there's nothing to clean up here.
 
     await disconnectDatabase();
     httpServer.close(() => {

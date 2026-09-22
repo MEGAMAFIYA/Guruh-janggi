@@ -69,9 +69,70 @@ export async function getMatchWithPlayers(matchId: string): Promise<MatchWithPla
   }) as Promise<MatchWithPlayers | null>;
 }
 
+/**
+ * NOTE on concurrency: this checks status/capacity and then creates the
+ * MatchPlayer row as two separate queries, not one atomic transaction, so a
+ * narrow race window remains if two players tap "join" at the exact same
+ * instant on the last open slot (both could pass the check before either
+ * insert lands). The unique (matchId, userId) constraint still prevents the
+ * same user from double-joining. Closing the remaining race fully would
+ * need a serializable transaction or a DB-level capacity constraint —
+ * flagged here rather than silently left unhandled.
+ */
 export async function joinMatch(matchId: string, userId: string): Promise<MatchPlayer> {
+  const match = await prisma.match.findUnique({
+    where: { id: matchId },
+    include: { players: true },
+  });
+  if (!match) throw new Error('Match not found');
+  if (match.status !== 'WAITING') throw new Error('Match is not accepting players');
+  if (match.players.length >= match.maxPlayers) throw new Error('Match is full');
+
   return prisma.matchPlayer.create({
     data: { matchId, userId },
+  });
+}
+
+// A WAITING match that's been sitting unfilled this long is treated as
+// abandoned: reusing it forever would mean a group that tried a game once,
+// didn't fill it, and moved on can never start a fresh one without an admin
+// manually running /bekor first.
+const STALE_WAITING_MATCH_MS = 15 * 60_000;
+
+/**
+ * Finds the chat's current WAITING match for this game, or creates a new
+ * one — atomically enough to avoid the common case of two players tapping
+ * "select game" in the same instant both creating their own independent
+ * WAITING match (which would silently split them into two separate rooms,
+ * each stuck waiting for an opponent who is actually in the other room).
+ * A stale WAITING match (see STALE_WAITING_MATCH_MS) is cancelled and
+ * replaced rather than reused.
+ */
+export async function findOrCreateWaitingMatch(
+  gameId: string,
+  chatId: bigint,
+  minPlayers: number,
+  maxPlayers: number,
+): Promise<{ match: MatchWithPlayers; isNew: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.match.findFirst({
+      where: { chatId, gameId, status: 'WAITING' },
+      include: PLAYER_INCLUDE,
+    });
+
+    if (existing) {
+      const isStale = Date.now() - existing.createdAt.getTime() > STALE_WAITING_MATCH_MS;
+      if (!isStale) {
+        return { match: existing as MatchWithPlayers, isNew: false };
+      }
+      await tx.match.update({ where: { id: existing.id }, data: { status: 'CANCELLED' } });
+    }
+
+    const created = await tx.match.create({
+      data: { gameId, chatId, status: 'WAITING', requiredPlayers: minPlayers, maxPlayers },
+    });
+    const match = await tx.match.findUnique({ where: { id: created.id }, include: PLAYER_INCLUDE });
+    return { match: match as MatchWithPlayers, isNew: true };
   });
 }
 
@@ -178,6 +239,21 @@ export async function findActiveMatchForUserInChat(
       status: { in: ['WAITING', 'STARTED'] },
       players: { some: { userId } },
     },
+    include: PLAYER_INCLUDE,
+    orderBy: { createdAt: 'desc' },
+  }) as Promise<MatchWithPlayers | null>;
+}
+
+/**
+ * Finds ANY active (WAITING or STARTED) match in a chat, regardless of who
+ * is in it. Used as a fallback for admins running /bekor when the admin
+ * themself is not a match participant — findActiveMatchForUserInChat alone
+ * would never find anything for them, making /bekor a no-op for admins who
+ * aren't playing.
+ */
+export async function findActiveMatchInChat(chatId: bigint): Promise<MatchWithPlayers | null> {
+  return prisma.match.findFirst({
+    where: { chatId, status: { in: ['WAITING', 'STARTED'] } },
     include: PLAYER_INCLUDE,
     orderBy: { createdAt: 'desc' },
   }) as Promise<MatchWithPlayers | null>;
