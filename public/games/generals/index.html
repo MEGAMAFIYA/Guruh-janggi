@@ -192,9 +192,9 @@ const BARRACKS_COST = 150;
 const SOLDIER_COST = 25;
 
 const COLORS = {
-  player1: { fill: "#2fd6c8", dark: "#178f85" },
-  player2: { fill: "#e94b5a", dark: "#a5303c" },
-  neutral: { fill: "#5a6b82", dark: "#3c4a5c" },
+  player1: { fill: "#2fd6c8", dark: "#178f85", light: "#a6fff5" },
+  player2: { fill: "#e94b5a", dark: "#a5303c", light: "#ffb0b8" },
+  neutral: { fill: "#5a6b82", dark: "#3c4a5c", light: "#a9bad4" },
 };
 
 /* =====================================================================
@@ -500,6 +500,7 @@ const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d");
 let dpr = Math.max(1, window.devicePixelRatio || 1);
 let layout = { scale: 1, offX: 0, offY: 0 };
+let animT = 0; // seconds, drives pulsing/glow animations
 
 function resizeCanvas(){
   const rect = document.getElementById("app").getBoundingClientRect();
@@ -531,17 +532,170 @@ function ownerColors(ownerId){
   return COLORS.neutral;
 }
 
+function roundRectPath(x, y, w, h, radius){
+  const r = Math.min(radius, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawField(){
+  const tl = worldToScreen(0, 0);
+  const w = MAP_WIDTH * layout.scale, h = MAP_HEIGHT * layout.scale;
+
+  // Base ground gradient (gives the flat field a sense of depth/lighting)
+  const ground = ctx.createLinearGradient(tl.x, tl.y, tl.x, tl.y + h);
+  ground.addColorStop(0, "#233553");
+  ground.addColorStop(0.5, "#182236");
+  ground.addColorStop(1, "#0e1626");
+  ctx.fillStyle = ground;
+  ctx.fillRect(tl.x, tl.y, w, h);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(tl.x, tl.y, w, h);
+  ctx.clip();
+
+  // Tactical grid
+  ctx.strokeStyle = "rgba(255,255,255,0.045)";
+  ctx.lineWidth = 1;
+  const step = 60 * layout.scale;
+  for (let gx = tl.x; gx <= tl.x + w; gx += step) {
+    ctx.beginPath(); ctx.moveTo(gx, tl.y); ctx.lineTo(gx, tl.y + h); ctx.stroke();
+  }
+  for (let gy = tl.y; gy <= tl.y + h; gy += step) {
+    ctx.beginPath(); ctx.moveTo(tl.x, gy); ctx.lineTo(tl.x + w, gy); ctx.stroke();
+  }
+
+  // Vignette for depth
+  const vg = ctx.createRadialGradient(
+    tl.x + w / 2, tl.y + h / 2, Math.min(w, h) * 0.15,
+    tl.x + w / 2, tl.y + h / 2, Math.max(w, h) * 0.75
+  );
+  vg.addColorStop(0, "rgba(0,0,0,0)");
+  vg.addColorStop(1, "rgba(0,0,0,0.4)");
+  ctx.fillStyle = vg;
+  ctx.fillRect(tl.x, tl.y, w, h);
+  ctx.restore();
+
+  ctx.strokeStyle = "#324768";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(tl.x, tl.y, w, h);
+}
+
+function drawShadow(cx, cy, r){
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r * 0.86, r * 1.02, r * 0.32, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fill();
+}
+
+function drawBuilding3D(p, r, c, alpha, selected, kind){
+  drawShadow(p.x, p.y, r);
+
+  // Command centers get a slow idle pulse ring — makes the "core" building feel alive
+  if (kind === "commandCenter") {
+    const pulse = (Math.sin(animT * 1.6) + 1) / 2; // 0..1
+    ctx.save();
+    ctx.globalAlpha = 0.18 + pulse * 0.18;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * (1.25 + pulse * 0.12), 0, Math.PI * 2);
+    ctx.strokeStyle = c.fill;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const radius = r * 0.3;
+  const body = ctx.createLinearGradient(p.x, p.y - r, p.x, p.y + r);
+  body.addColorStop(0, c.light);
+  body.addColorStop(0.5, c.fill);
+  body.addColorStop(1, c.dark);
+
+  // Buildings under construction shimmer between two alpha levels instead of sitting static
+  const drawAlpha = alpha < 1 ? (0.45 + (Math.sin(animT * 3) + 1) / 2 * 0.3) : alpha;
+
+  ctx.globalAlpha = drawAlpha;
+  roundRectPath(p.x - r, p.y - r, r * 2, r * 2, radius);
+  ctx.fillStyle = body;
+  ctx.fill();
+
+  // Glossy top sheen (light source from above) for a raised, 3D block feel
+  ctx.save();
+  roundRectPath(p.x - r, p.y - r, r * 2, r * 2, radius);
+  ctx.clip();
+  const sheen = ctx.createLinearGradient(p.x, p.y - r, p.x, p.y - r + r * 0.65);
+  sheen.addColorStop(0, "rgba(255,255,255,0.4)");
+  sheen.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = sheen;
+  ctx.fillRect(p.x - r, p.y - r, r * 2, r * 0.65);
+  ctx.restore();
+
+  ctx.lineWidth = Math.max(1.5, r * 0.08);
+  ctx.strokeStyle = c.dark;
+  roundRectPath(p.x - r, p.y - r, r * 2, r * 2, radius);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  if (selected) {
+    const glowPulse = (Math.sin(animT * 5) + 1) / 2; // 0..1, faster breathing than the idle pulse
+    ctx.save();
+    ctx.shadowColor = "#ffe27a";
+    ctx.shadowBlur = r * (0.4 + glowPulse * 0.25);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#ffe27a";
+    roundRectPath(p.x - r - 3, p.y - r - 3, r * 2 + 6, r * 2 + 6, radius + 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawUnit3D(p, r, c, fighting, selected){
+  drawShadow(p.x, p.y, r * 0.95);
+
+  const sphere = ctx.createRadialGradient(
+    p.x - r * 0.35, p.y - r * 0.4, r * 0.12,
+    p.x, p.y, r * 1.05
+  );
+  if (fighting) {
+    sphere.addColorStop(0, "#ffffff");
+    sphere.addColorStop(1, c.fill);
+  } else {
+    sphere.addColorStop(0, c.light);
+    sphere.addColorStop(0.55, c.fill);
+    sphere.addColorStop(1, c.dark);
+  }
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = sphere;
+  ctx.fill();
+  ctx.lineWidth = Math.max(1, r * 0.2);
+  ctx.strokeStyle = c.dark;
+  ctx.stroke();
+
+  if (selected) {
+    const glowPulse = (Math.sin(animT * 5) + 1) / 2;
+    ctx.save();
+    ctx.shadowColor = "#ffe27a";
+    ctx.shadowBlur = r * (0.55 + glowPulse * 0.35);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
+    ctx.strokeStyle = "#ffe27a";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 function render(){
   const rect = document.getElementById("app").getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  // Field background
-  const tl = worldToScreen(0, 0);
-  ctx.fillStyle = "#182236";
-  ctx.fillRect(tl.x, tl.y, MAP_WIDTH * layout.scale, MAP_HEIGHT * layout.scale);
-  ctx.strokeStyle = "#1f2b40";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(tl.x, tl.y, MAP_WIDTH * layout.scale, MAP_HEIGHT * layout.scale);
+  drawField();
 
   // Buildings
   for (const b of state.buildings) {
@@ -550,35 +704,27 @@ function render(){
     const rWorld = b.kind === "commandCenter" ? 42 : 28;
     const r = rWorld * layout.scale;
 
-    ctx.globalAlpha = b.constructing ? 0.55 : 1;
-    ctx.fillStyle = c.dark;
-    ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
-    ctx.strokeStyle = c.fill;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(p.x - r, p.y - r, r * 2, r * 2);
-    ctx.globalAlpha = 1;
+    drawBuilding3D(p, r, c, b.constructing ? 0.6 : 1, state.selectedBuildingId === b.id, b.kind);
 
-    ctx.font = Math.floor(r * 1.1) + "px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 3;
+    ctx.font = Math.floor(r * 1.1) + "px sans-serif";
+    ctx.fillStyle = "#fff";
     ctx.fillText(b.kind === "commandCenter" ? "🏛" : "⛺", p.x, p.y - 2);
+    ctx.shadowBlur = 0;
 
-    if (state.selectedBuildingId === b.id) {
-      ctx.strokeStyle = "#ffe27a";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(p.x - r - 3, p.y - r - 3, r * 2 + 6, r * 2 + 6);
-    }
-
-    drawHpBar(p.x, p.y - r - 8, r * 2, b.hp, b.maxHp, c.fill);
+    drawHpBar(p.x, p.y - r - 10, r * 2, b.hp, b.maxHp, c.fill);
 
     if (b.constructing) {
       ctx.fillStyle = "#ffffff";
       ctx.font = "700 11px Rubik, sans-serif";
-      ctx.fillText("🚧", p.x, p.y + r + 12);
+      ctx.fillText("🚧", p.x, p.y + r + 14);
     } else if (b.queueLength > 0) {
       ctx.fillStyle = "#ffe27a";
       ctx.font = "700 11px Rubik, sans-serif";
-      ctx.fillText(String(b.queueLength), p.x, p.y + r + 12);
+      ctx.fillText(String(b.queueLength), p.x, p.y + r + 14);
     }
   }
 
@@ -588,34 +734,36 @@ function render(){
     const c = ownerColors(u.ownerId);
     const r = 9 * layout.scale;
 
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = u.fighting ? "#ffffff" : c.fill;
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = c.dark;
-    ctx.stroke();
+    drawUnit3D(p, r, c, !!u.fighting, state.selectedUnitIds.indexOf(u.id) !== -1);
 
-    if (state.selectedUnitIds.indexOf(u.id) !== -1) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
-      ctx.strokeStyle = "#ffe27a";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    if (u.hp < u.maxHp) drawHpBar(p.x, p.y - r - 7, r * 2.2, u.hp, u.maxHp, c.fill);
+    if (u.hp < u.maxHp) drawHpBar(p.x, p.y - r - 9, r * 2.2, u.hp, u.maxHp, c.fill);
   }
 }
 
 function drawHpBar(cx, topY, width, hp, maxHp, color){
   const w = Math.max(14, width);
-  const h = 3;
+  const h = 4;
   const pct = Math.max(0, Math.min(1, hp / maxHp));
-  ctx.fillStyle = "rgba(0,0,0,.5)";
-  ctx.fillRect(cx - w / 2, topY, w, h);
-  ctx.fillStyle = pct > 0.35 ? color : "#e94b5a";
-  ctx.fillRect(cx - w / 2, topY, w * pct, h);
+  const radius = h / 2;
+
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 2;
+  roundRectPath(cx - w / 2, topY, w, h, radius);
+  ctx.fillStyle = "rgba(10,14,20,.75)";
+  ctx.fill();
+  ctx.restore();
+
+  if (pct > 0) {
+    roundRectPath(cx - w / 2, topY, w * pct, h, radius);
+    const barColor = pct > 0.35 ? color : "#e94b5a";
+    const grad = ctx.createLinearGradient(cx, topY, cx, topY + h);
+    grad.addColorStop(0, "rgba(255,255,255,0.55)");
+    grad.addColorStop(0.4, barColor);
+    grad.addColorStop(1, barColor);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
 }
 
 /* =====================================================================
@@ -698,11 +846,22 @@ canvas.addEventListener("touchstart", (e) => {
 canvas.addEventListener("click", (e) => { handleTap(e.clientX, e.clientY); });
 
 /* =====================================================================
+   ANIMATION LOOP — drives pulsing/glow effects only; game state itself
+   still updates purely from server events (see rts:worldUpdate above).
+===================================================================== */
+function animationLoop(ts){
+  animT = ts / 1000;
+  render();
+  requestAnimationFrame(animationLoop);
+}
+
+/* =====================================================================
    BOOT
 ===================================================================== */
 resizeCanvas();
 resetInputMode();
 Network.init();
+requestAnimationFrame(animationLoop);
 </script>
 </body>
 </html>
