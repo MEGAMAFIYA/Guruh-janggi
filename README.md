@@ -327,7 +327,7 @@ socket.on('game:event', ({ fromUserId, event, payload }) => { ... });
 
 Har bir o'rnatilgan o'yin o'zining `<slug>:*` event to'plamiga ega (masalan
 `katapulta:shoot` / `katapulta:damage` / `katapulta:gameOver`, yoki
-`generals:move` / `generals:boardUpdate` / `generals:gameOver`) — bular
+`rts:build` / `rts:trainUnit` / `rts:move` / `rts:worldUpdate` / `rts:gameOver`) — bular
 `src/game-servers/<slug>/socketHandlers.ts` faylida joylashgan bo'lib, mos
 mini app (`public/games/<slug>/index.html`) bilan sinxron ishlaydi.
 
@@ -375,7 +375,7 @@ telegram-game-platform/
 │   │   └── prisma.ts
 │   ├── game-servers/                 # One folder per built-in game's server logic
 │   │   ├── katapulta/                # Client-simulated physics, server relays + anti-cheat
-│   │   └── generals/                 # Fully server-authoritative grid strategy game
+│   │   └── generals/                 # Original base-building RTS (server-authoritative)
 │   ├── matchmaking/
 │   │   └── teamAssigner.ts
 │   ├── services/

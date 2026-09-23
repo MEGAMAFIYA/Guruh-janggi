@@ -1,16 +1,15 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { MatchWithPlayers, finishMatch } from '../../services/matchService';
-import { applyMove, Coord, scoreOf } from './board';
 import {
+  BuildingKind,
   DISCONNECT_FORFEIT_MS,
-  FAST_TICK_MS,
-  MATCH_TIME_LIMIT_MS,
-  MOVE_COOLDOWN_MS,
   REMATCH_TIMEOUT_MS,
-  SLOW_TICK_EVERY_N_FAST_TICKS,
+  SIM_TICK_MS,
+  UnitKind,
 } from './constants';
+import { issueMoveOrder, placeBuilding, queueUnit, tick } from './sim';
 import {
-  GeneralsMatchState,
+  RtsMatchState,
   PlayerRole,
   cancelCleanup,
   getOrCreateMatchState,
@@ -18,17 +17,22 @@ import {
   resetMatchState,
   roleForUser,
   scheduleCleanup,
-  serializeBoard,
+  serializeWorld,
   serializePublicState,
 } from './state';
+
+// A client can't reasonably issue more than this many orders per second by
+// legitimate tapping — beyond that it's either a bug or a flood, not
+// gameplay, so extra orders are just dropped rather than queued.
+const MIN_ORDER_INTERVAL_MS = 60;
 
 function endGame(
   io: SocketIOServer,
   room: string,
   matchId: string,
-  state: GeneralsMatchState,
-  winner: PlayerRole | null,
-  reason: 'capture' | 'timeout' | 'forfeit',
+  state: RtsMatchState,
+  winner: PlayerRole,
+  reason: 'destroyed' | 'timeout' | 'forfeit',
 ): void {
   if (state.status !== 'playing') return;
   state.status = 'finished';
@@ -38,50 +42,34 @@ function endGame(
     clearInterval(state.tickTimer);
     state.tickTimer = null;
   }
-  io.to(room).emit('generals:gameOver', { winner, reason });
-  finishMatch(matchId).catch((err) => {
+  io.to(room).emit('rts:gameOver', { winner, reason });
+  finishMatch(matchId).catch((err: unknown) => {
     console.error('[generals] finishMatch failed:', err);
   });
   scheduleCleanup(matchId);
 }
 
-function startTickLoop(io: SocketIOServer, room: string, matchId: string, state: GeneralsMatchState): void {
-  if (state.tickTimer) return; // already running
-  state.startedAt = Date.now();
-  state.fastTicksSinceSlow = 0;
+function startSimLoop(io: SocketIOServer, room: string, matchId: string, state: RtsMatchState): void {
+  if (state.tickTimer) return;
+  let lastTickAt = Date.now();
 
   state.tickTimer = setInterval(() => {
     if (state.status !== 'playing') return;
+    const now = Date.now();
+    const dtMs = now - lastTickAt;
+    lastTickAt = now;
 
-    const isSlowTick = state.fastTicksSinceSlow >= SLOW_TICK_EVERY_N_FAST_TICKS;
-    if (isSlowTick) state.fastTicksSinceSlow = 0;
-    else state.fastTicksSinceSlow += 1;
+    const result = tick(state.world, now, dtMs);
+    io.to(room).emit('rts:worldUpdate', { world: serializeWorld(state.world) });
 
-    for (const tile of state.board) {
-      if (!tile.owner) continue;
-      if (tile.type === 'general' || tile.type === 'city') {
-        tile.army += 1;
-      } else if (isSlowTick) {
-        tile.army += 1;
-      }
+    if (result.ended) {
+      endGame(io, room, matchId, state, result.winner, result.reason);
     }
-
-    io.to(room).emit('generals:boardUpdate', { board: serializeBoard(state) });
-
-    if (state.startedAt && Date.now() - state.startedAt >= MATCH_TIME_LIMIT_MS) {
-      const s1 = scoreOf(state.board, 'player1');
-      const s2 = scoreOf(state.board, 'player2');
-      let winner: PlayerRole | null;
-      if (s1.army !== s2.army) winner = s1.army > s2.army ? 'player1' : 'player2';
-      else if (s1.tiles !== s2.tiles) winner = s1.tiles > s2.tiles ? 'player1' : 'player2';
-      else winner = 'player1'; // fully tied — arbitrary but deterministic
-      endGame(io, room, matchId, state, winner, 'timeout');
-    }
-  }, FAST_TICK_MS);
+  }, SIM_TICK_MS);
 }
 
 /**
- * Wires up all `generals:*` events for one authenticated socket connection.
+ * Wires up all `rts:*` events for one authenticated socket connection.
  * Must only be called when `match.game.slug === 'generals'`.
  * The socket has already joined room `match:<matchId>` in server.ts.
  */
@@ -101,7 +89,7 @@ export function registerGeneralsHandlers(
   }));
 
   if (dbPlayers.length < 2) {
-    socket.emit('generals:error', 'Match hali 2 o\'yinchiga to\'lmagan');
+    socket.emit('rts:error', 'Match hali 2 o\'yinchiga to\'lmagan');
     return;
   }
 
@@ -110,13 +98,14 @@ export function registerGeneralsHandlers(
 
   const role = roleForUser(state, userId);
   if (!role) {
-    socket.emit('generals:error', 'Siz bu matchning ishtirokchisi emassiz');
+    socket.emit('rts:error', 'Siz bu matchning ishtirokchisi emassiz');
     return;
   }
 
   const me = state.players[role];
   me.connected = true;
   me.socketId = socket.id;
+  let lastOrderAt = 0;
 
   const pendingForfeit = state.disconnectTimers[role];
   if (pendingForfeit) {
@@ -127,7 +116,7 @@ export function registerGeneralsHandlers(
   const opp = opponentRole(role);
   const oppState = state.players[opp];
 
-  socket.emit('generals:youAre', {
+  socket.emit('rts:youAre', {
     role,
     opponentName: oppState.firstName,
     opponentPresent: oppState.present,
@@ -135,58 +124,81 @@ export function registerGeneralsHandlers(
   });
 
   if (state.status === 'playing') {
-    socket.emit('generals:stateSync', { state: serializePublicState(state) });
-    io.to(room).emit('generals:opponentReconnected', { role });
+    socket.emit('rts:stateSync', { state: serializePublicState(state) });
+    io.to(room).emit('rts:opponentReconnected', { role });
   }
 
-  socket.on('generals:imHere', () => {
+  socket.on('rts:imHere', () => {
     if (me.present) return;
     me.present = true;
-    socket.to(room).emit('generals:opponentHere', { role });
+    socket.to(room).emit('rts:opponentHere', { role });
 
     if (state.status === 'waiting' && me.present && oppState.present) {
       state.status = 'playing';
-      startTickLoop(io, room, matchId, state);
-      io.to(room).emit('generals:bothReady', { state: serializePublicState(state) });
+      startSimLoop(io, room, matchId, state);
+      io.to(room).emit('rts:bothReady', { state: serializePublicState(state) });
     }
   });
 
-  // ── Moves ───────────────────────────────────────────────────────────────
-  socket.on(
-    'generals:move',
-    (payload: { fromRow: number; fromCol: number; toRow: number; toCol: number }) => {
-      if (state.status !== 'playing') return;
+  function throttled(): boolean {
+    const now = Date.now();
+    if (now - lastOrderAt < MIN_ORDER_INTERVAL_MS) return true;
+    lastOrderAt = now;
+    return false;
+  }
 
-      const now = Date.now();
-      if (now - me.lastMoveAt < MOVE_COOLDOWN_MS) return;
+  // ── Build a building ────────────────────────────────────────────────────
+  socket.on('rts:build', (payload: { kind: BuildingKind; x: number; y: number }) => {
+    if (state.status !== 'playing' || throttled()) return;
+    const x = Number(payload?.x);
+    const y = Number(payload?.y);
+    const kind = payload?.kind;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (kind !== 'barracks') return; // only buildable kind in v1
 
-      const from: Coord = { row: Number(payload?.fromRow), col: Number(payload?.fromCol) };
-      const to: Coord = { row: Number(payload?.toRow), col: Number(payload?.toCol) };
-      if (
-        !Number.isInteger(from.row) || !Number.isInteger(from.col) ||
-        !Number.isInteger(to.row) || !Number.isInteger(to.col)
-      ) {
-        return;
-      }
+    const result = placeBuilding(state.world, role, kind, x, y, Date.now());
+    if (!result.ok) {
+      socket.emit('rts:actionError', { action: 'build', reason: result.reason });
+      return;
+    }
+    io.to(room).emit('rts:worldUpdate', { world: serializeWorld(state.world) });
+  });
 
-      const result = applyMove(state.board, role, from, to);
-      if (!result.ok) return; // invalid move — silently ignored, client re-syncs on next tick
+  // ── Train a unit ────────────────────────────────────────────────────────
+  socket.on('rts:trainUnit', (payload: { buildingId: string; kind: UnitKind }) => {
+    if (state.status !== 'playing' || throttled()) return;
+    const buildingId = String(payload?.buildingId ?? '');
+    const kind = payload?.kind;
+    if (!buildingId || kind !== 'soldier') return;
 
-      me.lastMoveAt = now;
-      io.to(room).emit('generals:boardUpdate', { board: serializeBoard(state) });
+    const result = queueUnit(state.world, role, buildingId, kind, Date.now());
+    if (!result.ok) {
+      socket.emit('rts:actionError', { action: 'train', reason: result.reason });
+      return;
+    }
+    io.to(room).emit('rts:worldUpdate', { world: serializeWorld(state.world) });
+  });
 
-      if (result.capturedGeneralOf) {
-        endGame(io, room, matchId, state, role, 'capture');
-      }
-    },
-  );
+  // ── Move / attack-move a group of units ────────────────────────────────
+  socket.on('rts:move', (payload: { unitIds: string[]; x: number; y: number }) => {
+    if (state.status !== 'playing' || throttled()) return;
+    const unitIds = Array.isArray(payload?.unitIds)
+      ? payload.unitIds.filter((id) => typeof id === 'string')
+      : [];
+    const x = Number(payload?.x);
+    const y = Number(payload?.y);
+    if (unitIds.length === 0 || unitIds.length > 200 || !Number.isFinite(x) || !Number.isFinite(y)) return;
+
+    issueMoveOrder(state.world, role, unitIds, x, y);
+    io.to(room).emit('rts:worldUpdate', { world: serializeWorld(state.world) });
+  });
 
   // ── Rematch ─────────────────────────────────────────────────────────────
-  socket.on('generals:rematchRequest', () => {
+  socket.on('rts:rematchRequest', () => {
     if (state.status !== 'finished') return;
     me.rematchReady = true;
 
-    io.to(room).emit('generals:rematchStatus', {
+    io.to(room).emit('rts:rematchStatus', {
       player1: state.players.player1.rematchReady,
       player2: state.players.player2.rematchReady,
     });
@@ -199,8 +211,8 @@ export function registerGeneralsHandlers(
         state.rematchTimer = null;
       }
       resetMatchState(state);
-      startTickLoop(io, room, matchId, state);
-      io.to(room).emit('generals:rematchStart', { state: serializePublicState(state) });
+      startSimLoop(io, room, matchId, state);
+      io.to(room).emit('rts:rematchStart', { state: serializePublicState(state) });
       return;
     }
 
@@ -214,7 +226,7 @@ export function registerGeneralsHandlers(
         if (stillWaiting) {
           state.players.player1.rematchReady = false;
           state.players.player2.rematchReady = false;
-          io.to(room).emit('generals:rematchTimeout');
+          io.to(room).emit('rts:rematchTimeout');
         }
       }, REMATCH_TIMEOUT_MS);
     }
@@ -226,7 +238,7 @@ export function registerGeneralsHandlers(
 
     me.connected = false;
     me.socketId = null;
-    io.to(room).emit('generals:opponentDisconnected', { role });
+    io.to(room).emit('rts:opponentDisconnected', { role });
 
     if (state.status === 'finished') {
       scheduleCleanup(matchId);

@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;600;800&display=swap" rel="stylesheet">
 <script>
-  // See katapulta/index.html for why this is registered first.
   window.onerror = function (msg, url, line) {
     try {
       var el = document.getElementById("tutorialStatus");
@@ -21,17 +20,18 @@
 <script src="/socket.io/socket.io.js"></script>
 <style>
   :root{
-    --bg:#12181f;
-    --panel:#1d2733;
-    --panel-light:#293646;
+    --bg:#0e1420;
+    --panel:#1a2331;
+    --panel-light:#26324430;
+    --panel-solid:#263244;
     --cream:#eef2f6;
     --p1:#2fd6c8;
     --p1-dark:#178f85;
     --p2:#e94b5a;
     --p2-dark:#a5303c;
-    --neutral:#3c4a5c;
-    --mountain:#0b0f14;
-    --grid-line:#0e151c;
+    --field:#182236;
+    --field-line:#1f2b40;
+    --gold:#f2b632;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none;}
   html,body{
@@ -44,27 +44,64 @@
   canvas#board{position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none;}
 
   #hud{position:absolute; inset:0; pointer-events:none; z-index:5;}
-  .scoreBar{
+  .topBar{
     position:absolute; top:calc(env(safe-area-inset-top,0px) + 8px);
     left:calc(env(safe-area-inset-left,0px) + 8px);
     right:calc(env(safe-area-inset-right,0px) + 8px);
     display:flex; justify-content:space-between; gap:8px;
   }
-  .scoreChip{
-    background:rgba(20,26,33,.75); border:2px solid var(--panel-light);
-    border-radius:12px; padding:6px 10px; min-width:110px;
-    font-size:12px; font-weight:600; backdrop-filter:blur(2px);
+  .chip{
+    background:rgba(20,26,33,.8); border:2px solid var(--panel-solid);
+    border-radius:12px; padding:6px 12px; font-size:13px; font-weight:700;
+    backdrop-filter:blur(2px); pointer-events:all;
   }
-  .scoreChip.self{border-color:var(--p1);}
-  .scoreChip.opp{border-color:var(--p2); text-align:right;}
-  .scoreChip .name{font-weight:800; display:block; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .scoreChip .stats{opacity:.85; font-variant-numeric:tabular-nums;}
-  .scoreChip.offline{opacity:.55;}
+  .chip.resource{border-color:var(--gold); color:var(--gold);}
+  .chip.self{border-color:var(--p1);}
+  .chip.opp{border-color:var(--p2);}
+  .chip.offline{opacity:.5;}
+
+  .bottomBar{
+    position:absolute; bottom:calc(env(safe-area-inset-bottom,0px) + 8px);
+    left:calc(env(safe-area-inset-left,0px) + 8px);
+    right:calc(env(safe-area-inset-right,0px) + 8px);
+    display:flex; gap:8px; pointer-events:all; flex-wrap:wrap;
+  }
+  .actionBtn{
+    flex:1; min-width:120px; font-family:inherit; font-weight:700; font-size:13px;
+    padding:11px 10px; border-radius:12px; border:2px solid var(--panel-solid);
+    background:rgba(20,26,33,.85); color:var(--cream); cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; gap:2px; line-height:1.25;
+  }
+  .actionBtn small{opacity:.7; font-weight:600; font-size:11px;}
+  .actionBtn.armed{border-color:var(--gold); box-shadow:0 0 0 2px rgba(242,182,50,.25) inset;}
+  .actionBtn.danger{border-color:var(--p2);}
+  .actionBtn:disabled{opacity:.4;}
+
+  #buildingPanel{
+    position:absolute; bottom:calc(env(safe-area-inset-bottom,0px) + 66px);
+    left:calc(env(safe-area-inset-left,0px) + 8px);
+    right:calc(env(safe-area-inset-right,0px) + 8px);
+    background:rgba(20,26,33,.92); border:2px solid var(--gold); border-radius:14px;
+    padding:10px 12px; pointer-events:all; display:none;
+  }
+  #buildingPanel.shown{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  #buildingPanel .info{font-size:12px; line-height:1.4;}
+  #buildingPanel button{
+    font-family:inherit; font-weight:800; font-size:13px; padding:9px 14px;
+    border-radius:10px; border:none; background:linear-gradient(180deg, var(--gold), #c88f16); color:#241a04;
+  }
+  #buildingPanel button:disabled{opacity:.4;}
+
+  #selectionHint{
+    position:absolute; top:calc(env(safe-area-inset-top,0px) + 46px);
+    left:0; right:0; text-align:center; font-size:12px; opacity:.85;
+    pointer-events:none;
+  }
 
   .overlay{
     position:absolute; inset:0; z-index:20; display:flex; flex-direction:column;
     align-items:center; justify-content:center; text-align:center; padding:24px;
-    background:rgba(10,14,18,.92); pointer-events:all;
+    background:rgba(8,11,16,.94); pointer-events:all;
   }
   .overlay.hidden{display:none;}
   .overlay h1{font-size:26px; margin:0 0 8px;}
@@ -75,23 +112,16 @@
     background:linear-gradient(180deg, var(--p1), var(--p1-dark)); cursor:pointer;
   }
   .btn:disabled{opacity:.5;}
-  .btn.secondary{background:var(--panel-light); color:var(--cream);}
+  .btn.secondary{background:var(--panel-solid); color:var(--cream);}
   #spinner{
     width:34px; height:34px; border-radius:50%;
     border:3px solid rgba(255,255,255,.2); border-top-color:var(--p1);
     animation:spin 0.9s linear infinite; margin-bottom:14px;
   }
   @keyframes spin{to{transform:rotate(360deg);}}
-
   #goTitle.win{color:var(--p1);}
   #goTitle.lose{color:var(--p2);}
   #rematchStatus{font-size:13px; opacity:.8; min-height:18px; margin-top:8px;}
-
-  #helpHint{
-    position:absolute; bottom:calc(env(safe-area-inset-bottom,0px) + 10px);
-    left:0; right:0; text-align:center; font-size:12px; opacity:.65;
-    pointer-events:none; z-index:5;
-  }
 </style>
 </head>
 <body>
@@ -99,19 +129,23 @@
   <canvas id="board"></canvas>
 
   <div id="hud">
-    <div class="scoreBar">
-      <div class="scoreChip self" id="chipSelf">
-        <span class="name" id="selfName">Siz</span>
-        <span class="stats" id="selfStats">— hudud · — armiya</span>
-      </div>
-      <div class="scoreChip opp" id="chipOpp">
-        <span class="name" id="oppName">Raqib</span>
-        <span class="stats" id="oppStats">— hudud · — armiya</span>
-      </div>
+    <div class="topBar">
+      <div class="chip resource" id="resourceChip">💰 —</div>
+      <div class="chip opp" id="oppChip">Raqib: —</div>
+    </div>
+    <div id="selectionHint"></div>
+
+    <div id="buildingPanel">
+      <div class="info" id="buildingPanelInfo">—</div>
+      <button id="trainBtn">🎖 Askar (25)</button>
+    </div>
+
+    <div class="bottomBar">
+      <button class="actionBtn" id="buildBtn">🏠 Kazarma<small>150 💰</small></button>
+      <button class="actionBtn" id="selectAllBtn">✅ Barchasini tanla</button>
+      <button class="actionBtn danger" id="cancelSelBtn" style="display:none;">❌ Bekor qilish</button>
     </div>
   </div>
-
-  <div id="helpHint">Hududingizni bosing, so'ng qo'shni katakka bosib armiya yuboring</div>
 
   <div class="overlay" id="waitOverlay">
     <div id="waitSpinner"><div id="spinner"></div></div>
@@ -123,7 +157,7 @@
 
   <div class="overlay hidden" id="gameOverOverlay">
     <h1 id="goTitle">G'ALABA!</h1>
-    <p id="goText">Siz raqibning bosh qarorgohini egallab, butun hududini bosib oldingiz.</p>
+    <p id="goText">Siz raqibning bosh qarorgohini vayron qildingiz.</p>
     <button class="btn" id="restartBtn">🔁 Qayta o'ynash</button>
     <div id="rematchStatus"></div>
   </div>
@@ -131,7 +165,7 @@
 
 <script>
 /* =====================================================================
-   TELEGRAM WEB APP BOOTSTRAP — identical pattern to katapulta/index.html
+   TELEGRAM WEB APP BOOTSTRAP
 ===================================================================== */
 const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 if (tg) {
@@ -150,11 +184,18 @@ const MATCH_ID = getStartParam();
 const INIT_DATA = tg ? tg.initData : "";
 
 /* =====================================================================
-   BOARD CONSTANTS — MUST stay in sync with
-   src/game-servers/generals/constants.ts (COLS/ROWS)
+   CONSTANTS — must mirror src/game-servers/generals/constants.ts
 ===================================================================== */
-const COLS = 9;
-const ROWS = 11;
+const MAP_WIDTH = 800;
+const MAP_HEIGHT = 1200;
+const BARRACKS_COST = 150;
+const SOLDIER_COST = 25;
+
+const COLORS = {
+  player1: { fill: "#2fd6c8", dark: "#178f85" },
+  player2: { fill: "#e94b5a", dark: "#a5303c" },
+  neutral: { fill: "#5a6b82", dark: "#3c4a5c" },
+};
 
 /* =====================================================================
    STATE
@@ -162,19 +203,23 @@ const ROWS = 11;
 const state = {
   myRole: null,
   opponentName: "Raqib",
-  cols: COLS,
-  rows: ROWS,
-  tiles: null,          // flat array, length cols*rows, row-major
-  status: "connecting",  // connecting | waiting | playing | gameover
-  selected: null,        // {row,col} or null
+  status: "connecting",
+  resources: { player1: 0, player2: 0 },
+  units: [],       // [{id, ownerId, kind, x, y, hp, maxHp, moving, fighting}]
+  buildings: [],   // [{id, ownerId, kind, x, y, hp, maxHp, constructing, constructionEndsAt, queueLength, queueReadyAt}]
+
+  mode: "idle",          // idle | placing | unitsSelected
+  selectedUnitIds: [],
+  selectedBuildingId: null,
+  placingKind: null,
+
   winner: null,
   winReason: null,
 };
 
-function tileAt(row, col){
-  if (row < 0 || row >= state.rows || col < 0 || col >= state.cols) return null;
-  return state.tiles ? state.tiles[row * state.cols + col] : null;
-}
+function myUnits(){ return state.units.filter((u) => u.ownerId === state.myRole); }
+function unitById(id){ return state.units.find((u) => u.id === id); }
+function buildingById(id){ return state.buildings.find((b) => b.id === id); }
 
 /* =====================================================================
    NETWORK
@@ -184,21 +229,11 @@ const Network = {
   connected: false,
 
   init(){
-    if (!MATCH_ID) {
-      setStatus("❌ Match topilmadi. Guruhdagi \"🎮 O'ynash\" tugmasi orqali qayta kiring.");
-      return;
-    }
-    if (!INIT_DATA) {
-      setStatus("❌ Telegram orqali ochilmadi. Mini App'ni Telegram ichida oching.");
-      return;
-    }
+    if (!MATCH_ID) { setStatus("❌ Match topilmadi. Guruhdagi \"🎮 O'ynash\" tugmasi orqali qayta kiring."); return; }
+    if (!INIT_DATA) { setStatus("❌ Telegram orqali ochilmadi. Mini App'ni Telegram ichida oching."); return; }
 
     setStatus("Serverga ulanmoqda...");
-
-    this.socket = io({
-      auth: { initData: INIT_DATA, matchId: MATCH_ID },
-      transports: ["websocket", "polling"],
-    });
+    this.socket = io({ auth: { initData: INIT_DATA, matchId: MATCH_ID }, transports: ["websocket", "polling"] });
 
     const connectTimeout = setTimeout(() => {
       if (!this.connected) {
@@ -209,72 +244,53 @@ const Network = {
 
     this.socket.on("connect_error", (err) => {
       clearTimeout(connectTimeout);
-      const detail = err && err.message ? err.message : "noma'lum";
-      setStatus("❌ Ulanishda xatolik: " + detail);
+      setStatus("❌ Ulanishda xatolik: " + (err && err.message ? err.message : "noma'lum"));
       document.getElementById("retryBtn").style.display = "inline-block";
     });
-
-    this.socket.on("generals:error", (msg) => {
+    this.socket.on("rts:error", (msg) => {
       clearTimeout(connectTimeout);
       setStatus("❌ " + msg);
       document.getElementById("retryBtn").style.display = "inline-block";
     });
-
     this.socket.on("match:cancelled", () => {
       this.connected = false;
       setStatus("❌ Match bekor qilindi. Guruhga qaytib, /guruh orqali qayta boshlashingiz mumkin.");
       try { this.socket.disconnect(); } catch(e) {}
     });
 
-    this.socket.on("generals:youAre", ({ role, opponentName, opponentPresent, state: s }) => {
+    this.socket.on("rts:youAre", ({ role, opponentName, opponentPresent, state: s }) => {
       clearTimeout(connectTimeout);
       state.myRole = role;
       this.connected = true;
       state.opponentName = opponentName || "Raqib";
-      document.getElementById("oppName").textContent = state.opponentName;
-      document.getElementById("selfName").textContent = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
-        ? (tg.initDataUnsafe.user.first_name || "Siz") : "Siz";
+      document.getElementById("oppChip").textContent = "Raqib: " + state.opponentName;
       applyServerState(s);
       showImHereButton(opponentPresent);
     });
 
-    this.socket.on("generals:opponentHere", () => {
-      if (state.status === "waiting") {
-        setStatus("✅ Raqib (" + state.opponentName + ") keldi! Endi siz ham \"Men shu yerdaman\" tugmasini bosing.");
-      }
+    this.socket.on("rts:opponentHere", () => {
+      if (state.status === "waiting") setStatus("✅ Raqib (" + state.opponentName + ") keldi! Endi siz ham tugmani bosing.");
     });
-
-    this.socket.on("generals:bothReady", ({ state: s }) => {
-      applyServerState(s);
-      beginPlaying();
-    });
-
-    this.socket.on("generals:stateSync", ({ state: s }) => {
+    this.socket.on("rts:bothReady", ({ state: s }) => { applyServerState(s); beginPlaying(); });
+    this.socket.on("rts:stateSync", ({ state: s }) => {
       applyServerState(s);
       if (state.status !== "playing" && s.status === "playing") beginPlaying();
     });
+    this.socket.on("rts:worldUpdate", ({ world }) => { applyWorld(world); render(); });
 
-    this.socket.on("generals:boardUpdate", ({ board }) => {
-      applyBoard(board);
-      updateScoreChips();
-      drawBoard();
-    });
+    this.socket.on("rts:actionError", ({ action, reason }) => { flashHint(actionErrorText(action, reason)); });
 
-    this.socket.on("generals:opponentDisconnected", () => {
-      setChipOffline("opp", true);
-    });
-    this.socket.on("generals:opponentReconnected", () => {
-      setChipOffline("opp", false);
-    });
+    this.socket.on("rts:opponentDisconnected", () => setChipOffline(true));
+    this.socket.on("rts:opponentReconnected", () => setChipOffline(false));
 
-    this.socket.on("generals:gameOver", ({ winner, reason }) => {
+    this.socket.on("rts:gameOver", ({ winner, reason }) => {
       state.status = "gameover";
       state.winner = winner;
       state.winReason = reason;
       showGameOver();
     });
 
-    this.socket.on("generals:rematchStatus", ({ player1, player2 }) => {
+    this.socket.on("rts:rematchStatus", ({ player1, player2 }) => {
       const selfReady = state.myRole === "player1" ? player1 : player2;
       const oppReady = state.myRole === "player1" ? player2 : player1;
       const el = document.getElementById("rematchStatus");
@@ -282,18 +298,14 @@ const Network = {
       else if (!selfReady && oppReady) el.textContent = "Raqib tayyor — siz ham bosing!";
       else el.textContent = "";
     });
-
-    this.socket.on("generals:rematchStart", ({ state: s }) => {
+    this.socket.on("rts:rematchStart", ({ state: s }) => {
       applyServerState(s);
       document.getElementById("gameOverOverlay").classList.add("hidden");
-      document.getElementById("restartBtn").disabled = false;
-      document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
+      resetInputMode();
       document.getElementById("rematchStatus").textContent = "";
-      state.selected = null;
       beginPlaying();
     });
-
-    this.socket.on("generals:rematchTimeout", () => {
+    this.socket.on("rts:rematchTimeout", () => {
       const btn = document.getElementById("restartBtn");
       btn.disabled = false;
       btn.textContent = "🔁 Qayta o'ynash";
@@ -301,41 +313,53 @@ const Network = {
     });
   },
 
-  imHere(){
-    if (this.socket && this.connected) this.socket.emit("generals:imHere");
-  },
-  sendMove(from, to){
-    if (this.socket && this.connected) {
-      this.socket.emit("generals:move", { fromRow: from.row, fromCol: from.col, toRow: to.row, toCol: to.col });
-    }
-  },
-  sendRematchRequest(){
-    if (this.socket && this.connected) this.socket.emit("generals:rematchRequest");
-  },
+  imHere(){ if (this.socket && this.connected) this.socket.emit("rts:imHere"); },
+  build(kind, x, y){ if (this.socket && this.connected) this.socket.emit("rts:build", { kind, x, y }); },
+  trainUnit(buildingId, kind){ if (this.socket && this.connected) this.socket.emit("rts:trainUnit", { buildingId, kind }); },
+  move(unitIds, x, y){ if (this.socket && this.connected) this.socket.emit("rts:move", { unitIds, x, y }); },
+  sendRematchRequest(){ if (this.socket && this.connected) this.socket.emit("rts:rematchRequest"); },
 };
+
+function actionErrorText(action, reason){
+  const reasons = {
+    "not enough resource": "Resurs yetarli emas",
+    "too far from your base": "Bazangizdan juda uzoq",
+    "overlaps another building": "Bu yerda joy band",
+    "not buildable": "Qurib bo'lmaydi",
+    "not your building": "Bu sizning binongiz emas",
+    "still under construction": "Hali qurilmoqda",
+    "cannot produce this unit": "Bu birlikni ishlab chiqara olmaydi",
+    "queue full": "Navbat to'lgan",
+  };
+  return "⚠️ " + (reasons[reason] || reason || "Amal bajarilmadi");
+}
 
 function applyServerState(s){
   state.status = s.status === "playing" ? "playing" : "waiting";
-  applyBoard(s.board);
-  setChipOffline("opp", state.myRole === "player1" ? !s.player2.connected : !s.player1.connected);
-  updateScoreChips();
-  drawBoard();
+  applyWorld(s.world);
+  setChipOffline(state.myRole === "player1" ? !s.player2.connected : !s.player1.connected);
+  render();
 }
-function applyBoard(board){
-  state.cols = board.cols;
-  state.rows = board.rows;
-  state.tiles = board.tiles;
+function applyWorld(world){
+  state.resources = world.resources;
+  state.units = world.units;
+  state.buildings = world.buildings;
+  document.getElementById("resourceChip").textContent = "💰 " + (state.resources[state.myRole] ?? 0);
+
+  // Drop selections that no longer exist (unit died / building destroyed).
+  state.selectedUnitIds = state.selectedUnitIds.filter((id) => unitById(id));
+  if (state.selectedBuildingId && !buildingById(state.selectedBuildingId)) {
+    state.selectedBuildingId = null;
+  }
+  updateBuildingPanel();
+  updateBottomBarState();
 }
 
 /* =====================================================================
    UI HELPERS
 ===================================================================== */
-function setStatus(text){
-  document.getElementById("tutorialStatus").textContent = text;
-}
-function setChipOffline(which, offline){
-  document.getElementById(which === "self" ? "chipSelf" : "chipOpp").classList.toggle("offline", !!offline);
-}
+function setStatus(text){ document.getElementById("tutorialStatus").textContent = text; }
+function setChipOffline(offline){ document.getElementById("oppChip").classList.toggle("offline", !!offline); }
 function showImHereButton(opponentPresent){
   document.getElementById("waitSpinner").style.display = "none";
   const btn = document.getElementById("imHereBtn");
@@ -354,26 +378,64 @@ function beginPlaying(){
   document.getElementById("waitOverlay").classList.add("hidden");
   state.status = "playing";
   resizeCanvas();
-  drawBoard();
+  render();
 }
-function roleLabel(role){ return role === state.myRole ? "self" : "opp"; }
+let hintTimer = null;
+function flashHint(text){
+  const el = document.getElementById("selectionHint");
+  el.textContent = text;
+  if (hintTimer) clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { if (el.textContent === text) updateSelectionHint(); }, 1800);
+}
+function updateSelectionHint(){
+  const el = document.getElementById("selectionHint");
+  if (state.mode === "placing") el.textContent = "Xaritada joy tanlang (bekor qilish uchun pastdagi tugma)";
+  else if (state.selectedUnitIds.length > 0) el.textContent = "Tanlandi: " + state.selectedUnitIds.length + " askar — boradigan joyni bosing";
+  else el.textContent = "";
+}
 
-function scoreOf(role){
-  let tiles = 0, army = 0;
-  if (state.tiles) {
-    for (const t of state.tiles) {
-      if (t.owner === role) { tiles += 1; army += t.army; }
-    }
-  }
-  return { tiles, army };
+function resetInputMode(){
+  state.mode = "idle";
+  state.selectedUnitIds = [];
+  state.selectedBuildingId = null;
+  state.placingKind = null;
+  updateBottomBarState();
+  updateBuildingPanel();
+  updateSelectionHint();
 }
-function updateScoreChips(){
-  if (!state.myRole) return;
-  const opp = state.myRole === "player1" ? "player2" : "player1";
-  const self = scoreOf(state.myRole);
-  const other = scoreOf(opp);
-  document.getElementById("selfStats").textContent = self.tiles + " hudud · " + self.army + " armiya";
-  document.getElementById("oppStats").textContent = other.tiles + " hudud · " + other.army + " armiya";
+
+function updateBottomBarState(){
+  const buildBtn = document.getElementById("buildBtn");
+  const cancelBtn = document.getElementById("cancelSelBtn");
+  buildBtn.classList.toggle("armed", state.mode === "placing");
+  buildBtn.disabled = (state.resources[state.myRole] ?? 0) < BARRACKS_COST && state.mode !== "placing";
+  cancelBtn.style.display = (state.mode === "placing" || state.selectedUnitIds.length > 0) ? "flex" : "none";
+  updateSelectionHint();
+}
+
+function updateBuildingPanel(){
+  const panel = document.getElementById("buildingPanel");
+  const b = state.selectedBuildingId ? buildingById(state.selectedBuildingId) : null;
+  if (!b || b.ownerId !== state.myRole) {
+    panel.classList.remove("shown");
+    return;
+  }
+  panel.classList.add("shown");
+  const info = document.getElementById("buildingPanelInfo");
+  const trainBtn = document.getElementById("trainBtn");
+  if (b.kind === "commandCenter") {
+    info.textContent = "🏛 Bosh qarorgoh — HP " + b.hp + "/" + b.maxHp;
+    trainBtn.style.display = "none";
+    return;
+  }
+  trainBtn.style.display = "block";
+  if (b.constructing) {
+    info.textContent = "🚧 Kazarma qurilmoqda...";
+    trainBtn.disabled = true;
+  } else {
+    info.textContent = "⛺ Kazarma — HP " + b.hp + "/" + b.maxHp + " · Navbat: " + b.queueLength + "/5";
+    trainBtn.disabled = (state.resources[state.myRole] ?? 0) < SOLDIER_COST || b.queueLength >= 5;
+  }
 }
 
 function showGameOver(){
@@ -381,18 +443,14 @@ function showGameOver(){
   const overlay = document.getElementById("gameOverOverlay");
   const title = document.getElementById("goTitle");
   const text = document.getElementById("goText");
-  title.textContent = won ? "G'ALABA!" : (state.winner ? "MAG'LUBIYAT" : "DURAG'");
-  title.className = won ? "win" : (state.winner ? "lose" : "");
+  title.textContent = won ? "G'ALABA!" : "MAG'LUBIYAT";
+  title.className = won ? "win" : "lose";
   if (state.winReason === "forfeit") {
     text.textContent = won ? "Raqib chiqib ketdi — siz g'olibsiz." : "Siz uzilib qoldingiz, raqib g'olib deb belgilandi.";
   } else if (state.winReason === "timeout") {
-    text.textContent = won
-      ? "Vaqt tugadi — ko'proq hudud/armiya bilan siz g'olib bo'ldingiz."
-      : "Vaqt tugadi — raqib ko'proq hudud/armiyaga ega bo'lib g'olib chiqdi.";
+    text.textContent = won ? "Vaqt tugadi — kuchliroq armiya bilan siz g'olib bo'ldingiz." : "Vaqt tugadi — raqib kuchliroq armiyaga ega bo'lib g'olib chiqdi.";
   } else {
-    text.textContent = won
-      ? "Siz raqibning bosh qarorgohini egallab, butun hududini bosib oldingiz."
-      : "Raqib sizning bosh qarorgohingizni egallab, butun hududingizni bosib oldi.";
+    text.textContent = won ? "Siz raqibning bosh qarorgohini vayron qildingiz." : "Raqib sizning bosh qarorgohingizni vayron qildi.";
   }
   document.getElementById("restartBtn").disabled = false;
   document.getElementById("restartBtn").textContent = "🔁 Qayta o'ynash";
@@ -408,12 +466,40 @@ document.getElementById("restartBtn").addEventListener("click", () => {
 });
 
 /* =====================================================================
+   BOTTOM BAR ACTIONS
+===================================================================== */
+document.getElementById("buildBtn").addEventListener("click", () => {
+  if (state.mode === "placing") { resetInputMode(); return; }
+  state.mode = "placing";
+  state.placingKind = "barracks";
+  state.selectedUnitIds = [];
+  state.selectedBuildingId = null;
+  updateBottomBarState();
+  updateBuildingPanel();
+});
+document.getElementById("selectAllBtn").addEventListener("click", () => {
+  const ids = myUnits().map((u) => u.id);
+  if (ids.length === 0) { flashHint("⚠️ Askaringiz yo'q"); return; }
+  state.mode = "unitsSelected";
+  state.selectedUnitIds = ids;
+  state.selectedBuildingId = null;
+  updateBottomBarState();
+  updateBuildingPanel();
+  render();
+});
+document.getElementById("cancelSelBtn").addEventListener("click", resetInputMode);
+document.getElementById("trainBtn").addEventListener("click", () => {
+  if (!state.selectedBuildingId) return;
+  Network.trainUnit(state.selectedBuildingId, "soldier");
+});
+
+/* =====================================================================
    CANVAS RENDERING
 ===================================================================== */
 const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d");
 let dpr = Math.max(1, window.devicePixelRatio || 1);
-let layout = { tile: 30, offX: 0, offY: 0 };
+let layout = { scale: 1, offX: 0, offY: 0 };
 
 function resizeCanvas(){
   const rect = document.getElementById("app").getBoundingClientRect();
@@ -424,124 +510,198 @@ function resizeCanvas(){
   canvas.style.height = rect.height + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  const padTop = 70, padBottom = 40, padSide = 10;
+  const padTop = 92, padBottom = 130, padSide = 8;
   const availW = rect.width - padSide * 2;
   const availH = rect.height - padTop - padBottom;
-  const tile = Math.max(14, Math.floor(Math.min(availW / state.cols, availH / state.rows)));
-  layout.tile = tile;
-  layout.offX = padSide + (availW - tile * state.cols) / 2;
-  layout.offY = padTop + (availH - tile * state.rows) / 2;
+  const scale = Math.min(availW / MAP_WIDTH, availH / MAP_HEIGHT);
+  layout.scale = scale;
+  layout.offX = padSide + (availW - MAP_WIDTH * scale) / 2;
+  layout.offY = padTop + (availH - MAP_HEIGHT * scale) / 2;
 
-  drawBoard();
+  render();
 }
 window.addEventListener("resize", resizeCanvas);
 
-const PALETTE = {
-  p1: "#2fd6c8", p1dark: "#178f85",
-  p2: "#e94b5a", p2dark: "#a5303c",
-  neutral: "#3c4a5c", neutralLine: "#4a5b6f",
-  mountain: "#0b0f14", mountainLine: "#1a2229",
-  grid: "#0e151c",
-};
+function worldToScreen(x, y){ return { x: layout.offX + x * layout.scale, y: layout.offY + y * layout.scale }; }
+function screenToWorld(sx, sy){ return { x: (sx - layout.offX) / layout.scale, y: (sy - layout.offY) / layout.scale }; }
 
-function drawBoard(){
-  if (!state.tiles) return;
+function ownerColors(ownerId){
+  if (ownerId === "player1") return COLORS.player1;
+  if (ownerId === "player2") return COLORS.player2;
+  return COLORS.neutral;
+}
+
+function render(){
   const rect = document.getElementById("app").getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  const { tile, offX, offY } = layout;
+  // Field background
+  const tl = worldToScreen(0, 0);
+  ctx.fillStyle = "#182236";
+  ctx.fillRect(tl.x, tl.y, MAP_WIDTH * layout.scale, MAP_HEIGHT * layout.scale);
+  ctx.strokeStyle = "#1f2b40";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(tl.x, tl.y, MAP_WIDTH * layout.scale, MAP_HEIGHT * layout.scale);
 
-  for (let row = 0; row < state.rows; row++) {
-    for (let col = 0; col < state.cols; col++) {
-      const t = tileAt(row, col);
-      if (!t) continue;
-      const x = offX + col * tile;
-      const y = offY + row * tile;
+  // Buildings
+  for (const b of state.buildings) {
+    const p = worldToScreen(b.x, b.y);
+    const c = ownerColors(b.ownerId);
+    const rWorld = b.kind === "commandCenter" ? 42 : 28;
+    const r = rWorld * layout.scale;
 
-      let fill = PALETTE.neutral;
-      if (t.type === "mountain") fill = PALETTE.mountain;
-      else if (t.owner === "player1") fill = PALETTE.p1dark;
-      else if (t.owner === "player2") fill = PALETTE.p2dark;
+    ctx.globalAlpha = b.constructing ? 0.55 : 1;
+    ctx.fillStyle = c.dark;
+    ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+    ctx.strokeStyle = c.fill;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(p.x - r, p.y - r, r * 2, r * 2);
+    ctx.globalAlpha = 1;
 
-      ctx.fillStyle = fill;
-      ctx.fillRect(x, y, tile - 1, tile - 1);
+    ctx.font = Math.floor(r * 1.1) + "px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(b.kind === "commandCenter" ? "🏛" : "⛺", p.x, p.y - 2);
 
-      if (state.selected && state.selected.row === row && state.selected.col === col) {
-        ctx.strokeStyle = "#ffe27a";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(x + 1.5, y + 1.5, tile - 4, tile - 4);
-      }
+    if (state.selectedBuildingId === b.id) {
+      ctx.strokeStyle = "#ffe27a";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(p.x - r - 3, p.y - r - 3, r * 2 + 6, r * 2 + 6);
+    }
 
-      if (t.type === "city" || t.type === "general") {
-        ctx.font = Math.floor(tile * 0.5) + "px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(t.type === "general" ? "👑" : "🏰", x + tile / 2, y + tile * 0.38);
-      }
+    drawHpBar(p.x, p.y - r - 8, r * 2, b.hp, b.maxHp, c.fill);
 
-      if (t.type !== "mountain" && (t.army > 0)) {
-        ctx.fillStyle = "#f4f7fa";
-        ctx.font = "700 " + Math.max(9, Math.floor(tile * 0.32)) + "px Rubik, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(String(t.army), x + tile / 2, y + tile * 0.74);
-      }
+    if (b.constructing) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "700 11px Rubik, sans-serif";
+      ctx.fillText("🚧", p.x, p.y + r + 12);
+    } else if (b.queueLength > 0) {
+      ctx.fillStyle = "#ffe27a";
+      ctx.font = "700 11px Rubik, sans-serif";
+      ctx.fillText(String(b.queueLength), p.x, p.y + r + 12);
     }
   }
+
+  // Units
+  for (const u of state.units) {
+    const p = worldToScreen(u.x, u.y);
+    const c = ownerColors(u.ownerId);
+    const r = 9 * layout.scale;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = u.fighting ? "#ffffff" : c.fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = c.dark;
+    ctx.stroke();
+
+    if (state.selectedUnitIds.indexOf(u.id) !== -1) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = "#ffe27a";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    if (u.hp < u.maxHp) drawHpBar(p.x, p.y - r - 7, r * 2.2, u.hp, u.maxHp, c.fill);
+  }
+}
+
+function drawHpBar(cx, topY, width, hp, maxHp, color){
+  const w = Math.max(14, width);
+  const h = 3;
+  const pct = Math.max(0, Math.min(1, hp / maxHp));
+  ctx.fillStyle = "rgba(0,0,0,.5)";
+  ctx.fillRect(cx - w / 2, topY, w, h);
+  ctx.fillStyle = pct > 0.35 ? color : "#e94b5a";
+  ctx.fillRect(cx - w / 2, topY, w * pct, h);
 }
 
 /* =====================================================================
-   INPUT — tap-to-select, tap-adjacent-to-move
+   INPUT
 ===================================================================== */
-function pickTile(clientX, clientY){
-  const rect = canvas.getBoundingClientRect();
-  const x = clientX - rect.left - layout.offX;
-  const y = clientY - rect.top - layout.offY;
-  const col = Math.floor(x / layout.tile);
-  const row = Math.floor(y / layout.tile);
-  if (row < 0 || row >= state.rows || col < 0 || col >= state.cols) return null;
-  return { row, col };
+function hitTestUnit(wx, wy){
+  let best = null, bestD = 18; // world-space tap tolerance
+  for (const u of state.units) {
+    const d = Math.hypot(u.x - wx, u.y - wy);
+    if (d < bestD) { best = u; bestD = d; }
+  }
+  return best;
 }
-function isAdjacent(a, b){
-  const dr = Math.abs(a.row - b.row), dc = Math.abs(a.col - b.col);
-  return (dr === 1 && dc === 0) || (dr === 0 && dc === 1);
+function hitTestBuilding(wx, wy){
+  for (const b of state.buildings) {
+    const rWorld = b.kind === "commandCenter" ? 42 : 28;
+    if (Math.hypot(b.x - wx, b.y - wy) <= rWorld) return b;
+  }
+  return null;
 }
+
 function handleTap(clientX, clientY){
   if (state.status !== "playing" || !state.myRole) return;
-  const pos = pickTile(clientX, clientY);
-  if (!pos) return;
-  const t = tileAt(pos.row, pos.col);
-  if (!t) return;
+  const rect = canvas.getBoundingClientRect();
+  const world = screenToWorld(clientX - rect.left, clientY - rect.top);
+  if (world.x < 0 || world.x > MAP_WIDTH || world.y < 0 || world.y > MAP_HEIGHT) return;
 
-  if (state.selected && isAdjacent(state.selected, pos)) {
-    Network.sendMove(state.selected, pos);
-    // Optimistic deselect — the authoritative boardUpdate will correct
-    // anything if the move was actually invalid (e.g. army <= 1 by then).
-    state.selected = null;
-    drawBoard();
+  if (state.mode === "placing") {
+    Network.build(state.placingKind, world.x, world.y);
+    resetInputMode();
     return;
   }
 
-  if (t.owner === state.myRole && t.army > 1) {
-    state.selected = pos;
-  } else {
-    state.selected = null;
+  const tappedUnit = hitTestUnit(world.x, world.y);
+  if (tappedUnit && tappedUnit.ownerId === state.myRole) {
+    state.mode = "unitsSelected";
+    state.selectedUnitIds = [tappedUnit.id];
+    state.selectedBuildingId = null;
+    updateBottomBarState();
+    updateBuildingPanel();
+    render();
+    return;
   }
-  drawBoard();
+
+  const tappedBuilding = hitTestBuilding(world.x, world.y);
+  if (tappedBuilding) {
+    if (tappedBuilding.ownerId === state.myRole) {
+      state.selectedBuildingId = tappedBuilding.id;
+      state.selectedUnitIds = [];
+      state.mode = "idle";
+      updateBottomBarState();
+      updateBuildingPanel();
+      render();
+      return;
+    }
+    // Tapped an enemy building while units are selected → send them to attack it.
+    if (state.selectedUnitIds.length > 0) {
+      Network.move(state.selectedUnitIds, tappedBuilding.x, tappedBuilding.y);
+      render();
+      return;
+    }
+    return;
+  }
+
+  if (state.selectedUnitIds.length > 0) {
+    Network.move(state.selectedUnitIds, world.x, world.y);
+    return; // keep the group selected so it can be redirected again
+  }
+
+  // Tapped empty ground with nothing selected/armed → just clear building panel.
+  state.selectedBuildingId = null;
+  updateBuildingPanel();
 }
+
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
-  const touch = e.changedTouches[0];
-  if (touch) handleTap(touch.clientX, touch.clientY);
+  const t = e.changedTouches[0];
+  if (t) handleTap(t.clientX, t.clientY);
 }, { passive: false });
-canvas.addEventListener("click", (e) => {
-  handleTap(e.clientX, e.clientY);
-});
+canvas.addEventListener("click", (e) => { handleTap(e.clientX, e.clientY); });
 
 /* =====================================================================
    BOOT
 ===================================================================== */
 resizeCanvas();
+resetInputMode();
 Network.init();
 </script>
 </body>
